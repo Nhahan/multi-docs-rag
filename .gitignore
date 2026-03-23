@@ -1,0 +1,9 @@
+.next
+node_modules
+.env
+.DS_Store
+data/index/*.json
+.idea
+tmp-*.ts
+scripts/_tmp_*.ts
+data/.DS_Store
