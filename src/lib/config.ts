@@ -25,6 +25,8 @@ const clampToPositiveFloatRange = (
 const clampToZeroOne = (raw: string | undefined, fallback: number): number =>
   clampToPositiveFloatRange(raw, fallback, 0, 1);
 
+const FIXED_CHAT_MODEL = "unsloth_Qwen3.5-9B-UD-Q4_K_XL";
+
 const parseBooleanEnv = (value: string | undefined, defaultValue: boolean) => {
   if (value === undefined) return defaultValue;
   const normalized = value.trim().toLowerCase();
@@ -157,9 +159,7 @@ const corpus = parseCorpusConfigFromEnv() ?? defaultCorpus ?? [];
 export const appConfig = {
   models: {
     baseUrl: process.env.OLLAMA_BASE_URL ?? "http://localhost:11434",
-    chatModel:
-      process.env.OLLAMA_CHAT_MODEL ??
-      "unsloth_Qwen3.5-9B-UD-Q4_K_XL:latest",
+    chatModel: FIXED_CHAT_MODEL,
     embeddingModel: process.env.OLLAMA_EMBEDDING_MODEL ?? "qwen3-embedding:4b",
     rerankModel: process.env.OLLAMA_RERANK_MODEL ?? process.env.OLLAMA_EMBEDDING_MODEL ?? "qwen3-embedding:4b",
   },

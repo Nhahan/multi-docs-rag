@@ -33,6 +33,18 @@ export interface PdfParseResult {
   documentInfo: PdfDocumentInfo;
 }
 
+type PositionedLine = {
+  text: string;
+  y: number;
+};
+
+type LayoutPage = {
+  page: number;
+  text: string;
+  lines: PositionedLine[];
+  pageHeight: number;
+};
+
 /* ------------------------------------------------------------------ */
 /*  Internals                                                          */
 /* ------------------------------------------------------------------ */
@@ -42,7 +54,11 @@ export interface PdfParseResult {
  * Joins text items with spaces (within a line) and newlines (between lines),
  * preserving basic reading order.
  */
-const extractTextFromPage = async (page: any): Promise<string> => {
+const extractLayoutFromPage = async (page: any): Promise<{
+  text: string;
+  lines: PositionedLine[];
+  pageHeight: number;
+}> => {
   const textContent = await page.getTextContent();
   const items = textContent.items as Array<{
     str?: string;
@@ -50,7 +66,10 @@ const extractTextFromPage = async (page: any): Promise<string> => {
     transform?: number[];
   }>;
 
-  if (!items || items.length === 0) return "";
+  const viewport = page.getViewport({ scale: 1 });
+  if (!items || items.length === 0) {
+    return { text: "", lines: [], pageHeight: viewport?.height ?? 0 };
+  }
 
   const rows = items
     .map((item, index) => ({
@@ -62,7 +81,9 @@ const extractTextFromPage = async (page: any): Promise<string> => {
     }))
     .filter((item) => item.text.trim().length > 0);
 
-  if (rows.length === 0) return "";
+  if (rows.length === 0) {
+    return { text: "", lines: [], pageHeight: viewport?.height ?? 0 };
+  }
 
   const lineBuckets = new Map<number, typeof rows>();
   const lineTolerance = 2;
@@ -75,20 +96,26 @@ const extractTextFromPage = async (page: any): Promise<string> => {
 
   const lines = [...lineBuckets.entries()]
     .sort((a, b) => b[0] - a[0])
-    .map(([, bucket]) =>
-      bucket
+    .map(([, bucket]) => ({
+      text: bucket
         .sort((a, b) => a.x - b.x || a.index - b.index)
         .map((entry) => entry.text)
         .join(" ")
         .replace(/\s+/gu, " ")
         .trim(),
-    )
-    .filter((line) => line.length > 0);
+      y: bucket.reduce((sum, entry) => sum + entry.y, 0) / Math.max(bucket.length, 1),
+    }))
+    .filter((line) => line.text.length > 0);
 
-  return lines
-    .join("\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  return {
+    text: lines
+      .map((line) => line.text)
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim(),
+    lines,
+    pageHeight: viewport?.height ?? 0,
+  };
 };
 
 const stripRepeatedBoilerplate = (pages: ExtractedPage[]): ExtractedPage[] => {
@@ -140,6 +167,58 @@ const stripRepeatedBoilerplate = (pages: ExtractedPage[]): ExtractedPage[] => {
   });
 };
 
+const stripRepeatedMarginLines = (pages: LayoutPage[]): ExtractedPage[] => {
+  const nonEmptyPages = pages.filter((page) => page.lines.length > 0 && page.pageHeight > 0);
+  const majorityThreshold = Math.ceil(nonEmptyPages.length / 2);
+  if (majorityThreshold <= 1) {
+    return pages.map(({ page, text }) => ({ page, text }));
+  }
+
+  const normalizeLineSignature = (line: string): string =>
+    line
+      .toLowerCase()
+      .replace(/\d+/gu, "#")
+      .replace(/[a-z]:\\[^\s]+/gu, "<path>")
+      .replace(/\s+/gu, " ")
+      .trim();
+
+  const marginFrequency = new Map<string, number>();
+  for (const page of nonEmptyPages) {
+    const uniqueMarginLines = new Set(
+      page.lines
+        .filter((line) => {
+          const normalizedY = line.y / page.pageHeight;
+          return normalizedY <= 0.12 || normalizedY >= 0.88;
+        })
+        .map((line) => normalizeLineSignature(line.text))
+        .filter((line) => line.length > 0),
+    );
+
+    for (const line of uniqueMarginLines) {
+      marginFrequency.set(line, (marginFrequency.get(line) ?? 0) + 1);
+    }
+  }
+
+  return pages.map((page) => {
+    const cleanedLines = page.lines.filter((line) => {
+      const normalizedY = page.pageHeight > 0 ? line.y / page.pageHeight : 0.5;
+      const isMarginLine = normalizedY <= 0.12 || normalizedY >= 0.88;
+      if (!isMarginLine) return true;
+      const frequency = marginFrequency.get(normalizeLineSignature(line.text)) ?? 0;
+      return frequency < majorityThreshold;
+    });
+
+    return {
+      page: page.page,
+      text: cleanedLines
+        .map((line) => line.text)
+        .join("\n")
+        .replace(/\n{3,}/gu, "\n\n")
+        .trim(),
+    };
+  });
+};
+
 /* ------------------------------------------------------------------ */
 /*  Public API                                                         */
 /* ------------------------------------------------------------------ */
@@ -181,15 +260,21 @@ export const parsePdf = async (filePath: string): Promise<PdfParseResult> => {
     );
   }
 
-  const pages: ExtractedPage[] = [];
+  const pages: LayoutPage[] = [];
 
   for (let index = 1; index <= pdf.numPages; index += 1) {
     const page = await pdf.getPage(index);
-    const text = await extractTextFromPage(page);
-    pages.push({ page: index, text });
+    const extracted = await extractLayoutFromPage(page);
+    pages.push({
+      page: index,
+      text: extracted.text,
+      lines: extracted.lines,
+      pageHeight: extracted.pageHeight,
+    });
   }
 
-  const nonEmptyPageCount = pages.filter((p) => p.text.length > 0).length;
+  const cleanedPages = stripRepeatedBoilerplate(stripRepeatedMarginLines(pages));
+  const nonEmptyPageCount = cleanedPages.filter((p) => p.text.length > 0).length;
 
   // Extract document-level metadata from PDF info dictionary
   const documentInfo = await extractPdfDocumentInfo(pdf);
@@ -199,7 +284,7 @@ export const parsePdf = async (filePath: string): Promise<PdfParseResult> => {
     fileName: basename(filePath),
     totalPages: pdf.numPages,
     nonEmptyPageCount,
-    pages,
+    pages: cleanedPages,
     documentInfo,
   };
 };
@@ -235,7 +320,7 @@ export const buildChunksFromPdf = async (params: {
   };
 }): Promise<CorpusChunk[]> => {
   const parseResult = await parsePdf(params.filePath);
-  const pages = stripRepeatedBoilerplate(parseResult.pages);
+  const pages = parseResult.pages;
   const chunks: CorpusChunk[] = [];
   let chunkId = 0;
 

@@ -15,7 +15,7 @@ These two files are fixture inputs only (legacy test corpus). The same runtime i
 - LangChain.js for document loading/splitting/vector/search/build blocks
 - LangGraph.js for workflow orchestration
 - Local LLMs via Ollama-compatible runtime
-  - Chat: `OLLAMA_CHAT_MODEL` (default `unsloth_Qwen3.5-9B-UD-Q4_K_XL:latest`)
+  - Chat: fixed `unsloth_Qwen3.5-9B-UD-Q4_K_XL`
   - Embedding: `OLLAMA_EMBEDDING_MODEL` (default `qwen3-embedding:4b`)
   - Rerank: `OLLAMA_RERANK_MODEL` (default `qwen3-embedding:4b`)
 
@@ -72,7 +72,6 @@ Every stored chunk must carry at least:
 ## Environment defaults
 Use `.env.example` values and allow override:
 - `OLLAMA_BASE_URL`
-- `OLLAMA_CHAT_MODEL`
 - `OLLAMA_EMBEDDING_MODEL`
 - `OLLAMA_RERANK_MODEL`
 - `OLLAMA_CHAT_THINK`

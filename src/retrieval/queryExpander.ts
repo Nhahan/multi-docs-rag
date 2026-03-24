@@ -76,19 +76,15 @@ const parseExpandedQueries = (raw: string): string[] => {
 };
 
 const buildExpansionPrompt = (question: string): string => `
-Rewrite the following user question into up to ${QUERY_LIMIT - 1} additional retrieval queries for arbitrary document search.
+Rewrite the question into up to ${QUERY_LIMIT - 1} additional retrieval queries.
 
-Requirements:
-- Keep exact identifiers, document ids, filenames, numbers, and quoted strings unchanged.
-- If the user question is not in the same language as the likely source text, include a translated English retrieval query.
-- If the question contains multiple subparts, include shorter evidence-seeking queries that preserve the original meaning.
-- If the question relates one document, system, method, artifact, or topic to another, include queries that separately target each concrete sub-request instead of repeating the full composite question every time.
-- Prefer concrete noun phrases and keywords that are likely to appear verbatim in source documents.
-- Avoid vague rewrites that mainly repeat abstract words like "document", "system", "control", or "requirements" without concrete concepts.
-- When the question asks for compliance, controls, limits, metrics, or requirements, generate retrieval queries that name the specific concepts implied by the task instead of only repeating the generic category words.
-- Do not broaden the request into nearby comparisons, baselines, or alternative systems unless the original question explicitly asks for them.
-- Do not invent facts or narrow the task to a specific domain beyond what is implied by the user question.
-- Return JSON only in this shape: {"queries":["..."]}.
+Rules:
+- Keep exact identifiers, filenames, numbers, quoted strings, and qualifiers unchanged.
+- Preserve scope. Do not broaden to comparisons, baselines, or related systems unless asked.
+- If helpful, split a multi-part question into shorter evidence-seeking queries.
+- If helpful, include one English query for cross-lingual retrieval.
+- Keep queries short and concrete.
+- Return JSON only: {"queries":["..."]}.
 
 Question:
 ${question}

@@ -219,7 +219,6 @@ The UI exposes a debug view with:
 Key environment variables from `.env.example`:
 
 - `OLLAMA_BASE_URL`
-- `OLLAMA_CHAT_MODEL`
 - `OLLAMA_EMBEDDING_MODEL`
 - `OLLAMA_RERANK_MODEL`
 - `OLLAMA_CHAT_THINK`
@@ -234,6 +233,8 @@ Key environment variables from `.env.example`:
 - `CHUNKS_PATH`
 - `VECTOR_STORE_PATH`
 - `LEXICAL_INDEX_PATH`
+
+Chat model is fixed in code to `unsloth_Qwen3.5-9B-UD-Q4_K_XL`.
 - `RETRIEVAL_TOP_K`
 - `RETRIEVAL_CANDIDATE_K`
 - `RETRIEVAL_ALLOW_DENSE_FALLBACK`

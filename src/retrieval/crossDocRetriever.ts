@@ -55,23 +55,6 @@ const dedupeById = (chunks: ScoredChunk[]): ScoredChunk[] => {
   return [...bestById.values()];
 };
 
-const extractExplicitDocumentIds = (query: string): string[] => {
-  const normalizedQuery = query.toLowerCase();
-  const ordered: string[] = [];
-  const seen = new Set<string>();
-
-  for (const doc of appConfig.corpus) {
-    const matchesDocumentId = normalizedQuery.includes(doc.document_id.toLowerCase());
-    const matchesSourceFile = normalizedQuery.includes(doc.source_file.toLowerCase());
-    if (!matchesDocumentId && !matchesSourceFile) continue;
-    if (seen.has(doc.document_id)) continue;
-    seen.add(doc.document_id);
-    ordered.push(doc.document_id);
-  }
-
-  return ordered;
-};
-
 export async function retrieveCrossDocument(
   lexicalStore: LexicalStore,
   vectorStore: LocalVectorStore | null,
@@ -95,49 +78,10 @@ export async function retrieveCrossDocument(
     expandQueries: false,
   });
 
-  const explicitDocumentIds = extractExplicitDocumentIds(query);
-  const scopedRetrievals =
-    explicitDocumentIds.length === 0
-      ? []
-      : await Promise.all(
-          explicitDocumentIds.map((documentId) =>
-            retrieveHybrid(lexicalStore, vectorStore, {
-              query,
-              queries,
-              candidateK,
-              topK: Math.max(candidateK, topK),
-              overrideRerank,
-              expandQueries: false,
-              filterDocumentIds: [documentId],
-            }),
-          ),
-        );
-
-  const lockedChunks = scopedRetrievals
-    .map((result) => result.chunks.slice().sort(compareScoredChunks)[0])
-    .filter((chunk): chunk is ScoredChunk => Boolean(chunk));
-  const lockedIds = new Set(lockedChunks.map((chunk) => chunk.chunk.id));
-
-  const mergedChunks = dedupeById([
-    ...lockedChunks,
-    ...retrieval.chunks,
-    ...scopedRetrievals.flatMap((result) => result.chunks.slice(0, 2)),
-  ]).sort(compareScoredChunks);
-
-  const finalChunks = [
-    ...lockedChunks.sort(compareScoredChunks),
-    ...mergedChunks.filter((chunk) => !lockedIds.has(chunk.chunk.id)),
-  ].slice(0, topK);
-
   return {
     ...retrieval,
     question: query,
-    chunks: finalChunks,
-    reranked: retrieval.reranked || scopedRetrievals.some((result) => result.reranked),
-    degradation_reasons: [
-      ...(retrieval.degradation_reasons ?? []),
-      ...scopedRetrievals.flatMap((result) => result.degradation_reasons ?? []),
-    ],
+    chunks: dedupeById(retrieval.chunks).sort(compareScoredChunks).slice(0, topK),
   };
 }
 
