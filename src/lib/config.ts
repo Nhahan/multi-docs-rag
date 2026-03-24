@@ -11,11 +11,6 @@ const clampToPositiveInt = (raw: string | undefined, fallback: number): number =
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 };
 
-const clampToPositiveFloat = (raw: string | undefined, fallback: number): number => {
-  const parsed = Number(raw ?? NaN);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-};
-
 const clampToPositiveFloatRange = (
   raw: string | undefined,
   fallback: number,
@@ -171,46 +166,10 @@ export const appConfig = {
   retrieval: {
     topK: Number(process.env.RETRIEVAL_TOP_K ?? 6),
     candidateK: Number(process.env.RETRIEVAL_CANDIDATE_K ?? 20),
-    denseWeight: Number(process.env.RETRIEVAL_DENSE_WEIGHT ?? 0.6),
-    lexicalWeight: Number(process.env.RETRIEVAL_LEXICAL_WEIGHT ?? 0.4),
-    lexicalEnableStructuralFilter:
-      (process.env.RETRIEVAL_LEXICAL_ENABLE_STRUCTURAL_FILTERS ?? "true").toLowerCase() !== "false",
-    lexicalStructuralMinTokenCount:
-      clampToPositiveInt(process.env.RETRIEVAL_LEXICAL_STRUCTURAL_MIN_TOKEN_COUNT, 10),
-    lexicalStructuralAlphaRatio:
-      clampToPositiveFloat(process.env.RETRIEVAL_LEXICAL_STRUCTURAL_ALPHA_RATIO, 0.22),
-    lexicalStructuralMinAlpha:
-      clampToPositiveInt(process.env.RETRIEVAL_LEXICAL_STRUCTURAL_MIN_ALPHA, 3),
-    lexicalLengthPenaltyScale:
-      clampToPositiveFloat(process.env.RETRIEVAL_LEXICAL_LENGTH_PENALTY_SCALE, 0.75),
     allowDenseFallback:
       (process.env.RETRIEVAL_ALLOW_DENSE_FALLBACK ?? "true").toLowerCase() !== "false",
     rerankTopK: Number(process.env.RETRIEVAL_RERANK_TOP_K ?? 8),
     enableRerank: (process.env.RETRIEVAL_ENABLE_RERANK ?? "true").toLowerCase() !== "false",
-    rerankCandidateWeight: clampToPositiveFloat(
-      process.env.RETRIEVAL_RERANK_CANDIDATE_WEIGHT,
-      0.28,
-    ),
-    rerankBaseWeight: clampToPositiveFloat(
-      process.env.RETRIEVAL_RERANK_BASE_WEIGHT,
-      0.72,
-    ),
-    scoreFloorMin: clampToPositiveFloatRange(
-      process.env.RETRIEVAL_SCORE_FLOOR_MIN,
-      0.0001,
-      0,
-      1,
-    ),
-    queryDiversityBoostSlope: clampToPositiveFloatRange(
-      process.env.RETRIEVAL_QUERY_DIVERSITY_SLOPE,
-      0.012,
-      0,
-      1,
-    ),
-    queryDiversityBoostCap: clampToPositiveFloat(
-      process.env.RETRIEVAL_QUERY_DIVERSITY_CAP,
-      0.08,
-    ),
   },
   runtime: {
     ollamaRequestTimeoutMs: Number(process.env.OLLAMA_REQUEST_TIMEOUT_MS ?? 120000),
