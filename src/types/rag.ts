@@ -47,7 +47,7 @@ export interface PipelineStageTrace {
 }
 
 export interface PipelineResult {
-  quality: EvidenceAvailability | null;
+  evidence: EvidenceAvailability | null;
   trace: PipelineStageTrace[];
 }
 
@@ -63,10 +63,11 @@ export interface RetrievalResult {
 export interface GraphState {
   question: string;
   retrieval?: RetrievalResult;
+  requested_items?: string[];
   answer?: string;
   citations?: string[];
   debug?: boolean;
-  quality?: EvidenceAvailability;
+  evidence?: EvidenceAvailability;
   trace?: PipelineStageTrace[];
 }
 

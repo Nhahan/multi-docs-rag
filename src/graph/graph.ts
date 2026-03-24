@@ -11,6 +11,10 @@ const GraphStateShape = Annotation.Root({
     reducer: (_, next) => next,
     default: () => undefined,
   }),
+  requested_items: Annotation<string[] | undefined>({
+    reducer: (_, next) => next ?? [],
+    default: () => [],
+  }),
   answer: Annotation<string | undefined>({
     reducer: (_, next) => next,
     default: () => undefined,
@@ -19,7 +23,7 @@ const GraphStateShape = Annotation.Root({
     reducer: (_, next) => next ?? [],
     default: () => [],
   }),
-  quality: Annotation<EvidenceAvailability | null | undefined>({
+  evidence: Annotation<EvidenceAvailability | null | undefined>({
     reducer: (_, next) => next ?? undefined,
     default: () => undefined,
   }),

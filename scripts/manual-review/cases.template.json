@@ -1,0 +1,70 @@
+{
+  "title": "Generic manual review set",
+  "description": "Template for manual semantic review against any local PDF corpus. Copy this file and replace the questions with corpus-specific review prompts. This file is not used by runtime code.",
+  "cases": [
+    {
+      "id": "single-doc-factual",
+      "category": "single-doc factual",
+      "question": "In document \"document-a\", what does the retrieved evidence say about the requested topic?",
+      "reviewer_focus": [
+        "single-document precision",
+        "citation grounding",
+        "unsupported handling"
+      ],
+      "notes": "Use a direct factual question that should be answerable from one document without needing synthesis."
+    },
+    {
+      "id": "single-doc-summary",
+      "category": "single-doc summary",
+      "question": "In document \"document-a\", summarize the main point of the relevant section and any stated limitation.",
+      "reviewer_focus": [
+        "summary faithfulness",
+        "citation grounding"
+      ],
+      "notes": "Prefer a question where the source text contains a concise summary-like passage."
+    },
+    {
+      "id": "multi-doc-synthesis",
+      "category": "multi-doc synthesis",
+      "question": "Using document-a and document-b, explain how the retrieved evidence from both documents relates to the same topic, and say explicitly if one document does not support the requested link.",
+      "reviewer_focus": [
+        "cross-document synthesis",
+        "citation grounding",
+        "unsupported handling"
+      ],
+      "notes": "Use this for questions that require combining evidence across documents without forcing a comparison."
+    },
+    {
+      "id": "insufficient-evidence",
+      "category": "insufficient evidence",
+      "question": "Using document-a and document-b, answer a question that the current corpus probably cannot support fully, and check whether the system refuses unsupported claims cleanly.",
+      "reviewer_focus": [
+        "grounded refusal",
+        "avoid hallucination"
+      ],
+      "notes": "This should probe whether the model says 'not supported by the retrieved evidence' instead of filling gaps."
+    },
+    {
+      "id": "identifier-heavy",
+      "category": "identifier-heavy retrieval",
+      "question": "In document-a, what does the retrieved evidence say about the exact identifier or section requested here?",
+      "reviewer_focus": [
+        "identifier retrieval",
+        "page precision",
+        "avoid nearby irrelevant text"
+      ],
+      "notes": "Use a question that includes an exact section number, table id, figure id, or other stable identifier."
+    },
+    {
+      "id": "multilingual-query",
+      "category": "multilingual",
+      "question": "document-a 문서에서 요청한 항목이 무엇인지 한국어로 물어보고, 근거가 없으면 없다고 말하게 하세요.",
+      "reviewer_focus": [
+        "multilingual retrieval",
+        "citation grounding",
+        "unsupported handling"
+      ],
+      "notes": "Use a non-English question when the source text is primarily in another language."
+    }
+  ]
+}

@@ -93,6 +93,21 @@ const formatChunkContextLine = (entry: ScoredChunk): string => {
   return sectionTitle ? `${label} ${sectionTitle} — ${entry.chunk.text}` : `${label} ${entry.chunk.text}`;
 };
 
+const formatPlainContextLine = (entry: ScoredChunk): string => {
+  const sectionTitle = entry.chunk.metadata.section_title?.trim();
+  const documentId = entry.chunk.metadata.document_id?.trim();
+  if (sectionTitle && documentId) {
+    return `${documentId} ${sectionTitle} — ${entry.chunk.text}`.trim();
+  }
+  if (sectionTitle) {
+    return `${sectionTitle} — ${entry.chunk.text}`.trim();
+  }
+  if (documentId) {
+    return `${documentId} — ${entry.chunk.text}`.trim();
+  }
+  return entry.chunk.text.trim();
+};
+
 /* ------------------------------------------------------------------ */
 /*  Extraction from retrieval results                                  */
 /* ------------------------------------------------------------------ */
@@ -137,6 +152,13 @@ export const buildCitedContext = (chunks: ScoredChunk[]): string =>
     .filter(isScoredChunk)
     .filter((entry) => typeof entry.chunk.text === "string")
     .map((entry) => formatChunkContextLine(entry))
+    .join("\n\n");
+
+export const buildEvidenceContext = (chunks: ScoredChunk[]): string =>
+  chunks
+    .filter(isScoredChunk)
+    .filter((entry) => typeof entry.chunk.text === "string")
+    .map((entry) => formatPlainContextLine(entry))
     .join("\n\n");
 
 /* ------------------------------------------------------------------ */

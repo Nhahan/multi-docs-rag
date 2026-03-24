@@ -113,6 +113,45 @@ npm run smoke:hard-multidoc
 
 These are useful regression checks, but they are not a substitute for manual semantic review on hard multi-document questions.
 
+## Manual review harness
+
+For manual semantic review, use:
+
+```bash
+npm run review:manual
+```
+
+Optional filters:
+
+```bash
+npm run review:manual -- --case hard-multidoc
+npm run review:manual -- --file scripts/manual-review/cases.local.json
+npm run review:manual -- --question "What does document-a say about ..." --id adhoc-1 --category adhoc
+```
+
+Generic template for other corpora:
+
+```bash
+cp scripts/manual-review/cases.template.json scripts/manual-review/my-cases.json
+npm run review:manual -- --file scripts/manual-review/my-cases.json
+```
+
+This harness does not auto-pass or auto-fail cases. It prints:
+
+- the full answer
+- inline citations
+- evidence availability summary
+- document mix
+- top retrieved chunks
+- pipeline trace
+
+Files under `scripts/manual-review/` are review inputs only.
+
+- `cases.local.json`: fixture review set for the local test corpus
+- `cases.template.json`: generic template for arbitrary corpora
+
+These files are not runtime policy.
+
 ## Query API
 
 ### `POST /api/query`

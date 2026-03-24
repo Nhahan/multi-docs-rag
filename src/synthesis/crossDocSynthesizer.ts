@@ -6,7 +6,6 @@
  * that instruct the LLM to combine and compare information across documents.
  */
 
-import { citationLabel } from "../citations/citationExtractor";
 import { ScoredChunk } from "../types/rag";
 
 /* ------------------------------------------------------------------ */
@@ -35,6 +34,12 @@ export interface CrossDocAnalysis {
   /** Synthesis instruction tailored to the document mix */
   synthesisInstruction: string;
 }
+
+const formatPlainEvidenceLine = (sc: ScoredChunk): string =>
+  [sc.chunk.metadata.section_title ?? "", sc.chunk.text]
+    .filter(Boolean)
+    .join(" — ")
+    .trim();
 
 const formatDocumentLabel = (docId: string, sourceFile: string): string =>
   sourceFile || docId;
@@ -92,11 +97,11 @@ export const buildStructuredContext = (groups: DocumentGroup[]): string => {
   const sections: string[] = [];
 
   for (const group of groups) {
-    const header = `=== Source: ${group.label} ===`;
+    const header = `=== Document: ${group.label} ===`;
     const chunkTexts = group.chunks.map(
       (sc) =>
         isValidScoredChunk(sc) && typeof sc.chunk.text === "string"
-          ? `${citationLabel(sc.chunk.metadata)} ${sc.chunk.metadata.section_title ?? ""} ${sc.chunk.text}`.trim()
+          ? formatPlainEvidenceLine(sc)
           : "[missing metadata]",
     );
     sections.push([header, ...chunkTexts].join("\n\n"));
@@ -126,12 +131,11 @@ const buildEvidenceInstruction = (groups: DocumentGroup[]): string => {
     `You are answering from ${docCount} source document group(s): ${docNames}.`,
     "",
     "Synthesis guidelines:",
-    "1. **Compare**: Where documents address the same topic, note agreements and any differences.",
-    "2. **Combine**: Merge complementary information into a unified answer — do not just list each document separately.",
-    "3. **Attribute**: Every factual claim must cite its source using the citation labels shown in context.",
-    "4. **Structure**: Organize the answer by topic or theme with explicit source references.",
-    "5. **Stay on asked fields**: Answer the user's requested sub-questions only; do not add adjacent metrics or controls unless the user asked for them.",
-    "6. **No metric substitution**: Do not answer a latency request with capacity evidence, or a capacity request with latency evidence. If the requested field is not supported, say so.",
+    "1. Answer the user's requested sub-questions only; do not add adjacent metrics or controls unless the user asked for them.",
+    "2. If the question asks for comparison, note agreements and differences. Otherwise, answer directly without forcing a comparison structure.",
+    "3. Merge complementary evidence across documents when it helps answer the question, but do not list documents separately unless needed for clarity.",
+    "4. Do not answer a latency request with capacity evidence, or a capacity request with latency evidence. If the requested field is not supported, say so.",
+    "5. Do not add source attributions, provenance sections, or document-location references unless the user explicitly asks for them.",
   ].join("\n");
 };
 
@@ -180,7 +184,6 @@ export const crossDocCoverageSummary = (
   isMultiDocument: analysis.isMultiDocument,
   documents: analysis.groups.map((g) => ({
     id: g.documentId,
-    type: g.documentType,
     chunkCount: g.chunks.length,
     topScore: g.chunks[0]?.score?.toFixed(4) ?? "N/A",
   })),

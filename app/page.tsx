@@ -17,8 +17,7 @@ type APIChunk = {
 
 type QueryResponse = {
   answer: string;
-  citations: string[];
-  quality: EvidenceAvailability;
+  evidence: EvidenceAvailability;
   trace: PipelineStageTrace[];
   retrieval: {
     reranked: boolean;
@@ -32,9 +31,8 @@ type QueryResponse = {
 export default function Home() {
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
-  const [quality, setQuality] = useState<EvidenceAvailability | null>(null);
+  const [evidence, setEvidence] = useState<EvidenceAvailability | null>(null);
   const [trace, setTrace] = useState<PipelineStageTrace[]>([]);
-  const [citations, setCitations] = useState<string[]>([]);
   const [chunks, setChunks] = useState<APIChunk[]>([]);
   const [retrievalSummary, setRetrievalSummary] = useState<{
     dense_enabled: boolean;
@@ -75,8 +73,8 @@ export default function Home() {
         share: chunks.length > 0 ? entry.count / chunks.length : 0,
       }))
       .sort((left, right) => {
-      if (right.count !== left.count) return right.count - left.count;
-      return right.bestScore - left.bestScore;
+        if (right.count !== left.count) return right.count - left.count;
+        return right.bestScore - left.bestScore;
       });
   }, [chunks]);
 
@@ -87,8 +85,7 @@ export default function Home() {
     setAnswer("");
     setMessage("");
     setChunks([]);
-    setCitations([]);
-    setQuality(null);
+    setEvidence(null);
     setTrace([]);
     setRetrievalSummary(null);
     try {
@@ -102,8 +99,7 @@ export default function Home() {
         setMessage(payload.error ?? "Request failed.");
       } else {
         setAnswer(payload.answer);
-        setCitations(payload.citations ?? []);
-        setQuality(payload.quality ?? null);
+        setEvidence(payload.evidence ?? null);
         setTrace(payload.trace ?? []);
         setChunks(payload.retrieval?.chunks ?? []);
         setRetrievalSummary({
@@ -195,16 +191,16 @@ export default function Home() {
             : ""}
         </p>
       ) : null}
-      {quality ? (
+      {evidence ? (
         <p>
-          Evidence availability: <strong>{quality.passed ? "available" : "unavailable"}</strong>
-          {" "}({quality.candidate_count} chunks, top
-          {quality.top_score.toFixed(3)}, avg {quality.avg_score.toFixed(3)})
+          Evidence availability: <strong>{evidence.passed ? "available" : "unavailable"}</strong>
+          {" "}({evidence.candidate_count} chunks, top
+          {evidence.top_score.toFixed(3)}, avg {evidence.avg_score.toFixed(3)})
         </p>
       ) : null}
-      {quality && quality.reasons?.length ? (
+      {evidence && evidence.reasons?.length ? (
         <p>
-          Availability notes: <span style={{ whiteSpace: "pre-line" }}>{quality.reasons.join("\n")}</span>
+          Availability notes: <span style={{ whiteSpace: "pre-line" }}>{evidence.reasons.join("\n")}</span>
         </p>
       ) : null}
       {message ? <p>{message}</p> : null}
@@ -213,11 +209,6 @@ export default function Home() {
         <section>
           <h2>Answer</h2>
           <pre style={{ whiteSpace: "pre-wrap", lineHeight: 1.4 }}>{answer}</pre>
-          {citations.length ? (
-            <p>
-              <strong>Citations:</strong> {citations.join(", ")}
-            </p>
-          ) : null}
         </section>
       ) : null}
 

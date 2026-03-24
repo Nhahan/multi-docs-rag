@@ -13,6 +13,7 @@
     "smoke:primary": "tsx scripts/smoke-primary-fixture.ts",
     "smoke:secondary": "tsx scripts/smoke-secondary-fixture.ts",
     "smoke:hard-multidoc": "tsx scripts/smoke-hard-multidoc.ts",
+    "review:manual": "tsx scripts/manual-review.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

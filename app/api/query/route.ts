@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { runRagQuery } from "@/graph/run";
 import { EvidenceAvailability, PipelineStageTrace } from "@/types/rag";
-import { formatCitationResponse } from "@/citations/citationFormatter";
 
 export async function POST(req: Request) {
   try {
@@ -12,22 +11,12 @@ export async function POST(req: Request) {
     }
     const debug = Boolean(body.debug);
     const result = await runRagQuery(question, debug);
-
-    // Format citation-grounded response
     const chunks = result.retrieval?.chunks ?? [];
-    const citationResponse = formatCitationResponse(
-      result.answer ?? "",
-      chunks,
-    );
 
     return NextResponse.json({
       question,
-      answer: citationResponse.cited_answer,
-      citations: citationResponse.inline_citations,
-      citation_entries: citationResponse.citation_entries,
-      citation_footer: citationResponse.citation_footer,
-      has_citations: citationResponse.has_citations,
-      quality: result.quality as EvidenceAvailability,
+      answer: result.answer ?? "",
+      evidence: result.evidence as EvidenceAvailability,
       trace: (result.trace ?? []) as PipelineStageTrace[],
       retrieval: {
         reranked: result.retrieval?.reranked ?? false,

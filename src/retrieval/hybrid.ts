@@ -70,7 +70,7 @@ const uniqueScored = (value: unknown): ScoredChunk | null => {
 
 const rerankByEmbedding = async (
   candidates: ScoredChunk[],
-  query: string,
+  queries: string[],
   vectorStore: LocalVectorStore | null,
 ): Promise<{ chunks: ScoredChunk[]; used: boolean }> => {
   if (!vectorStore || !candidates.length) {
@@ -79,7 +79,11 @@ const rerankByEmbedding = async (
 
   try {
     const reranker = getRerankEmbeddingModel();
-    const queryVector = await reranker.embedQuery(query);
+    const uniqueQueries = dedupe(queries);
+    if (!uniqueQueries.length) {
+      return { chunks: candidates, used: false };
+    }
+    const queryVectors = await reranker.embedDocuments(uniqueQueries);
     const rerankLimit = Math.min(appConfig.retrieval.rerankTopK, candidates.length);
     const limited = [...candidates]
       .sort((a, b) => b.score - a.score)
@@ -87,10 +91,20 @@ const rerankByEmbedding = async (
       .map((entry) => {
         const vector = vectorStore.getVectorForChunk(entry.chunk.id);
         if (!vector) return entry;
-        const dot = queryVector.reduce((sum, _, index) => sum + queryVector[index] * (vector[index] ?? 0), 0);
-        const qNorm = Math.sqrt(queryVector.reduce((sum, value) => sum + value * value, 0));
         const cNorm = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0));
-        const sim = qNorm && cNorm ? dot / (qNorm * cNorm) : 0;
+        let sim = Number.NEGATIVE_INFINITY;
+        for (const queryVector of queryVectors) {
+          if (!Array.isArray(queryVector) || queryVector.length === 0) continue;
+          const dot = queryVector.reduce((sum, _, index) => sum + queryVector[index] * (vector[index] ?? 0), 0);
+          const qNorm = Math.sqrt(queryVector.reduce((sum, value) => sum + value * value, 0));
+          const candidateSim = qNorm && cNorm ? dot / (qNorm * cNorm) : 0;
+          if (candidateSim > sim) {
+            sim = candidateSim;
+          }
+        }
+        if (!Number.isFinite(sim)) {
+          sim = 0;
+        }
         return { ...entry, rerankScore: sim };
       });
 
@@ -292,7 +306,7 @@ export const retrieveHybrid = async (
     (denseEnabled || vectorStore !== null);
 
   const rerankResult = shouldRerank
-    ? await rerankByEmbedding(normalizedScored, query, vectorStore)
+    ? await rerankByEmbedding(normalizedScored, retrievalQueries, vectorStore)
     : { chunks: normalizedScored, used: false };
 
   const final = Array.from(

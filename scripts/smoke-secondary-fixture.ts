@@ -63,9 +63,9 @@ async function main() {
 
   // Print summary
   console.log(
-    "Quality:",
-    result.quality
-      ? `passed=${result.quality.passed}, top=${result.quality.top_score.toFixed(3)}, avg=${result.quality.avg_score.toFixed(3)}`
+    "Evidence:",
+    result.evidence
+      ? `passed=${result.evidence.passed}, top=${result.evidence.top_score.toFixed(3)}, avg=${result.evidence.avg_score.toFixed(3)}`
       : "N/A",
   );
   console.log("Answer (first 300 chars):\n ", result.answer?.slice(0, 300));

@@ -1,0 +1,70 @@
+{
+  "title": "Local fixture manual review set",
+  "description": "Manual review cases for the local fixture corpus. This file is fixture data, not runtime policy.",
+  "cases": [
+    {
+      "id": "single-doc-factual",
+      "category": "single-doc factual",
+      "question": "In document \"cfr-code-of-federal-regulations\", what section discusses information collection requirements for public comments?",
+      "reviewer_focus": [
+        "single-document precision",
+        "citation grounding",
+        "unsupported handling"
+      ],
+      "notes": "Answer should stay within the cited CFR evidence and avoid pulling unrelated paper content."
+    },
+    {
+      "id": "single-doc-summary",
+      "category": "single-doc summary",
+      "question": "In document \"agent-memory-below-the-prompt\", what is the main point of the abstract and what limitation does it highlight?",
+      "reviewer_focus": [
+        "summary faithfulness",
+        "citation grounding"
+      ],
+      "notes": "Answer should summarize only what is actually supported by the cited paper pages."
+    },
+    {
+      "id": "multi-doc-synthesis",
+      "category": "multi-doc synthesis",
+      "question": "Using agent-memory-below-the-prompt and cfr-code-of-federal-regulations, explain what the paper says about the system's memory behavior and whether the retrieved CFR evidence directly gives matching compliance controls for that system.",
+      "reviewer_focus": [
+        "cross-document synthesis",
+        "unsupported handling",
+        "avoid irrelevant regulation sections"
+      ],
+      "notes": "The answer may legitimately say that the retrieved CFR evidence is insufficient."
+    },
+    {
+      "id": "identifier-heavy",
+      "category": "identifier-heavy retrieval",
+      "question": "In cfr-code-of-federal-regulations, what does § 11.10 discuss in the retrieved evidence?",
+      "reviewer_focus": [
+        "identifier retrieval",
+        "page precision",
+        "avoid nearby irrelevant sections"
+      ]
+    },
+    {
+      "id": "multilingual-query",
+      "category": "multilingual",
+      "question": "agent-memory-below-the-prompt 문서에서 8K context 기준 FP16과 Q4가 각각 몇 개 agent를 지원하는지 알려줘. 근거가 없으면 없다고 말해줘.",
+      "reviewer_focus": [
+        "multilingual retrieval",
+        "numeric grounding",
+        "unsupported handling"
+      ]
+    },
+    {
+      "id": "hard-multidoc",
+      "category": "hard multi-doc",
+      "question": "Using agent-memory-below-the-prompt and cfr-code-of-federal-regulations, what is the maximum number of 8K-context agents supported for FP16 and Q4, what are the 4K cold, warm, and hot latencies, and which three CFR controls or section numbers are most directly relevant to this system? If any requested item is not supported by the retrieved evidence, say so explicitly.",
+      "reviewer_focus": [
+        "multi-doc grounding",
+        "numeric grounding",
+        "unsupported handling",
+        "avoid irrelevant CFR mapping"
+      ],
+      "notes": "This is a manual review case. Unsupported CFR mapping is acceptable if the cited evidence does not justify it."
+    }
+  ]
+}
