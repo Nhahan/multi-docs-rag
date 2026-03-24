@@ -11,7 +11,7 @@ const normalizeWord = (value: string) => value.trim().toLowerCase();
 
 const DEFAULT_BM25_K1 = 1.2;
 const DEFAULT_BM25_B = 0.75;
-const LEXICAL_INDEX_VERSION = 5;
+const LEXICAL_INDEX_VERSION = 6;
 
 const tokenizeText = (text: string): string[] => {
   const rawTokens =
@@ -60,8 +60,7 @@ export class LexicalStore {
 
     for (const chunk of chunks) {
       const searchable = [
-        chunk.metadata.document_id,
-        chunk.metadata.source_file,
+        chunk.metadata.section_title,
         chunk.text,
       ]
         .filter(Boolean)

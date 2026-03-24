@@ -7,6 +7,7 @@ import { expandRetrievalQueries } from "./queryExpander";
 
 interface HybridRetrieveOptions {
   query: string;
+  queries?: string[];
   filterDocumentTypes?: DocumentType[];
   filterDocumentIds?: string[];
   candidateK?: number;
@@ -33,6 +34,20 @@ const toNumber = (value: unknown): number | undefined => {
 };
 
 const QUERY_RRF_K = 60;
+
+const dedupe = (queries: string[]): string[] => {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const query of queries) {
+    const normalized = query.replace(/\s+/gu, " ").trim();
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(normalized);
+  }
+  return unique;
+};
 
 const compareScoredChunks = (left: ScoredChunk, right: ScoredChunk): number => {
   const leftRerank = toNumber(left.rerankScore) ?? Number.NEGATIVE_INFINITY;
@@ -231,6 +246,7 @@ export const retrieveHybrid = async (
 ): Promise<RetrievalResult> => {
   const {
     query,
+    queries,
     filterDocumentTypes = [],
     filterDocumentIds = [],
     candidateK = appConfig.retrieval.candidateK,
@@ -239,7 +255,11 @@ export const retrieveHybrid = async (
     expandQueries = true,
   } = options;
 
-  const retrievalQueries = expandQueries ? await expandRetrievalQueries(query, undefined) : [query];
+  const retrievalQueries = queries?.length
+    ? dedupe(queries)
+    : expandQueries
+      ? dedupe(await expandRetrievalQueries(query, undefined))
+      : [query];
   const denseEnabled = Boolean(vectorStore && vectorStore.isUsable());
   const lexicalEnabled = true;
   const degradationReasons: string[] = [];

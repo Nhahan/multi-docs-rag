@@ -52,23 +52,92 @@ const extractTextFromPage = async (page: any): Promise<string> => {
 
   if (!items || items.length === 0) return "";
 
-  const parts: string[] = [];
-  for (const item of items) {
-    const str = item.str ?? "";
-    if (str.length > 0) {
-      parts.push(str);
-    }
-    // pdf.js marks end-of-line items; use newline to separate lines
-    if (item.hasEOL) {
-      parts.push("\n");
+  const rows = items
+    .map((item, index) => ({
+      text: item.str ?? "",
+      x: Array.isArray(item.transform) ? item.transform[4] ?? 0 : 0,
+      y: Array.isArray(item.transform) ? item.transform[5] ?? 0 : 0,
+      hasEOL: Boolean(item.hasEOL),
+      index,
+    }))
+    .filter((item) => item.text.trim().length > 0);
+
+  if (rows.length === 0) return "";
+
+  const lineBuckets = new Map<number, typeof rows>();
+  const lineTolerance = 2;
+  for (const row of rows) {
+    const key = Math.round(row.y / lineTolerance) * lineTolerance;
+    const bucket = lineBuckets.get(key) ?? [];
+    bucket.push(row);
+    lineBuckets.set(key, bucket);
+  }
+
+  const lines = [...lineBuckets.entries()]
+    .sort((a, b) => b[0] - a[0])
+    .map(([, bucket]) =>
+      bucket
+        .sort((a, b) => a.x - b.x || a.index - b.index)
+        .map((entry) => entry.text)
+        .join(" ")
+        .replace(/\s+/gu, " ")
+        .trim(),
+    )
+    .filter((line) => line.length > 0);
+
+  return lines
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+};
+
+const stripRepeatedBoilerplate = (pages: ExtractedPage[]): ExtractedPage[] => {
+  const nonEmptyPages = pages.filter((page) => page.text.trim().length > 0);
+  const majorityThreshold = Math.ceil(nonEmptyPages.length / 2);
+  if (majorityThreshold <= 1) {
+    return pages;
+  }
+
+  const normalizeLineSignature = (line: string): string =>
+    line
+      .toLowerCase()
+      .replace(/\d+/gu, "#")
+      .replace(/[a-z]:\\[^\s]+/gu, "<path>")
+      .replace(/\s+/gu, " ")
+      .trim();
+
+  const lineDocumentFrequency = new Map<string, number>();
+  for (const page of nonEmptyPages) {
+    const uniqueLines = new Set(
+      page.text
+        .split("\n")
+        .map((line) => normalizeLineSignature(line))
+        .filter((line) => line.length > 0),
+    );
+    for (const line of uniqueLines) {
+      lineDocumentFrequency.set(line, (lineDocumentFrequency.get(line) ?? 0) + 1);
     }
   }
 
-  // Collapse multiple blank lines and trim
-  return parts
-    .join("")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  return pages.map((page) => {
+    if (!page.text.trim()) {
+      return page;
+    }
+
+    const cleaned = page.text
+      .split("\n")
+      .map((line) => line.replace(/\s+/gu, " ").trim())
+      .filter((line) => {
+        if (!line) return false;
+        const frequency = lineDocumentFrequency.get(normalizeLineSignature(line)) ?? 0;
+        return frequency < majorityThreshold;
+      })
+      .join("\n")
+      .replace(/\n{3,}/gu, "\n\n")
+      .trim();
+
+    return { ...page, text: cleaned };
+  });
 };
 
 /* ------------------------------------------------------------------ */
@@ -166,6 +235,7 @@ export const buildChunksFromPdf = async (params: {
   };
 }): Promise<CorpusChunk[]> => {
   const parseResult = await parsePdf(params.filePath);
+  const pages = stripRepeatedBoilerplate(parseResult.pages);
   const chunks: CorpusChunk[] = [];
   let chunkId = 0;
 
@@ -175,7 +245,7 @@ export const buildChunksFromPdf = async (params: {
     );
   }
 
-  for (const page of parseResult.pages) {
+  for (const page of pages) {
     // Skip pages with no text content
     if (!page.text.trim()) continue;
 

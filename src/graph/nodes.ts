@@ -69,6 +69,12 @@ type RequestedItemPlan = {
   items: string[];
 };
 
+type ItemAnswerPlan = {
+  item: string;
+  supported: boolean;
+  answer: string;
+};
+
 const parseGroundingVerdict = (raw: string): GroundingVerdict | null => {
   const trimmed = raw.trim();
   if (!trimmed) return null;
@@ -129,6 +135,52 @@ const parseRequestedItemPlan = (raw: string): RequestedItemPlan | null => {
   return null;
 };
 
+const parseItemAnswerPlan = (raw: string): ItemAnswerPlan[] => {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/u);
+  const candidate = fenced?.[1]?.trim() ?? trimmed;
+
+  try {
+    const parsed = JSON.parse(candidate) as unknown;
+    const items =
+      parsed &&
+      typeof parsed === "object" &&
+      Array.isArray((parsed as { items?: unknown }).items)
+        ? (parsed as { items: unknown[] }).items
+        : [];
+
+    return items
+      .filter(
+        (value): value is { item: string; supported: boolean; answer: string } =>
+          Boolean(value) &&
+          typeof value === "object" &&
+          typeof (value as { item?: unknown }).item === "string" &&
+          typeof (value as { supported?: unknown }).supported === "boolean" &&
+          typeof (value as { answer?: unknown }).answer === "string",
+      )
+      .map((value) => {
+        const item = value.item.trim();
+        const answer = value.answer.trim();
+        if (!value.supported) {
+          return {
+            item,
+            supported: false,
+            answer: `The requested information about ${item} is not supported by the retrieved evidence.`,
+          };
+        }
+        return {
+          item,
+          supported: true,
+          answer,
+        };
+      })
+      .filter((value) => value.item.length > 0 && value.answer.length > 0);
+  } catch {
+    return [];
+  }
+};
+
 const planRequestedItems = async (question: string): Promise<string[]> => {
   const chat = getChatModel();
   try {
@@ -140,7 +192,18 @@ Rules:
 - Return JSON only: {"items":["..."]}.
 - Preserve exact identifiers, document ids, filenames, quoted strings, and numbers when relevant.
 - Each item should be an answerable sub-request, not a retrieval keyword list.
+- Phrase each item as the information being requested, not as an instruction. Example: "Maximum number of 8K-context agents supported for FP16 precision" instead of "Determine the maximum number of 8K-context agents supported for FP16 precision".
+- Each item should describe the factual sub-request itself, not the retrieval procedure.
 - Keep items concise.
+- Do not repeat document ids or filenames unless the item itself is explicitly about that identifier or filename.
+- If the question mentions multiple documents, keep only the document or topic references that are actually needed for that specific sub-request instead of carrying every named document into every item.
+- If different sub-requests naturally point to different named subjects in the question, assign each item only the relevant subject or document instead of merging all named subjects together.
+- For metric, capacity, latency, or system-behavior items, retain the concrete system, paper, artifact, or method they are about when that subject is explicit in the question.
+- For compliance, control, regulation, or section-identification items, retain the concrete regulation, standard, policy, or governing document they are about when that subject is explicit in the question.
+- Do not include phrases like "using X and Y", "from document", or other provenance wording unless the user explicitly asked about provenance or document identity.
+- Preserve the substantive subject of the user's request. If an item depends on a specific system, method, artifact, regulation, topic, or named concept mentioned in the question, keep that subject in the item instead of reducing it to a generic placeholder.
+- Resolve deictic references such as "this system", "that method", "the approach", or similar shorthand into the concrete subject named in the original question whenever possible.
+- For multi-part questions, each item should remain specific enough that someone could retrieve evidence for it without seeing the original full question.
 - Do not invent extra items beyond what the user explicitly asked for.
 - If the question is already a single request, return one item.
 `),
@@ -156,26 +219,82 @@ Rules:
   return [question];
 };
 
-const normalizeAnswerPresentation = async (
+const formatRequestedItemResponses = (items: ItemAnswerPlan[]): string => {
+  if (items.length === 0) {
+    return EVIDENCE_WARNING;
+  }
+
+  if (items.length === 1) {
+    return items[0].answer;
+  }
+
+  return items
+    .map((entry) => `- ${entry.answer}`)
+    .join("\n\n");
+};
+
+const generateItemResponsesWithModel = async (
   question: string,
-  answer: string,
-): Promise<string> => {
+  requestedItems: string[],
+  chunks: ScoredChunk[],
+  isMultiDocument: boolean,
+): Promise<ItemAnswerPlan[]> => {
+  if (requestedItems.length === 0 || chunks.length === 0) {
+    return [];
+  }
+
   const chat = getChatModel();
+  const context = isMultiDocument
+    ? analyseCrossDocEvidence(chunks).structuredContext
+    : buildEvidenceContext(chunks);
   const response = await chat.invoke([
     new SystemMessage(`
-You are rewriting a grounded RAG answer for presentation only.
+You are answering a multi-part question from retrieved evidence.
 
-Preserve all supported claims and all explicit unsupported/insufficient-evidence statements.
-Do not add new facts.
-Do not remove supported facts.
-Do not include citation markup, source names, file names, page numbers, document locations, or separate Source/Sources/provenance sections unless the user explicitly asked for them.
-Return only the rewritten user-facing answer.
+Return JSON only in this shape:
+{"items":[{"item":"...","supported":true|false,"answer":"..."}]}
+
+Rules:
+- Preserve each requested item exactly.
+- For each requested item, decide whether the retrieved evidence directly supports it.
+- If supported, write a concise self-contained user-facing answer for that item using only retrieved evidence.
+- Supported answers must be complete sentences, not bare values, fragments, labels, or isolated numbers.
+- If a supported value is stated only under an explicit condition, environment, hardware profile, memory budget, context length, or other qualifier, include that qualifier in the answer instead of presenting the value as unconditional.
+- Preserve the requested qualifier exactly when it matters semantically. For example, cold, warm, and hot are distinct requested conditions and must not be substituted for one another.
+- If a requested item is answered by an explicit table cell, comparison row, metric row, caption, or short factual sentence in the retrieved evidence, treat it as supported even if the evidence is concise or tabular.
+- If the question asks for a single value or metric, answer with the value for the requested subject only. Do not add baseline, comparison, or alternative-system values unless the requested item explicitly asks for comparison.
+- If unsupported, set supported=false and answer with a concise self-contained statement that names the requested subject and includes the phrase "not supported by the retrieved evidence".
+- If the retrieved evidence explicitly states that a configuration fits, supports, allows, or reaches a quantity under the same requested condition, treat that quantity as the supported answer.
+- Do not include citation markup, source names, file names, page numbers, document locations, or provenance sections.
+- Do not invent facts, identifiers, controls, section numbers, or numeric values.
+- Do not use evidence for one requested item to answer a different requested item.
+- Do not answer a requested item with a value belonging to a different system, baseline, or comparison target unless the item explicitly asks for that comparison target.
+- Do not answer a requested item with a value belonging to a different qualifier, state, mode, or condition than the one named in the item.
+- Do not mark an item unsupported if the retrieved evidence explicitly contains the answer in tabular or comparison form.
 `),
-    new HumanMessage(`Question:\n${question}\n\nDraft answer:\n${answer}`),
+    new HumanMessage(
+      `Question:\n${question}\n\nRequested items:\n- ${requestedItems.join("\n- ")}\n\nRetrieved context:\n${context}`,
+    ),
   ]);
 
-  const normalized = parseChatResponse(response.content).trim();
-  return normalized.length > 0 ? normalized : answer;
+  const parsed = parseItemAnswerPlan(parseChatResponse(response.content));
+  if (parsed.length > 0) {
+    const byItem = new Map(parsed.map((entry) => [entry.item, entry]));
+    return requestedItems.map((item) => {
+      const entry = byItem.get(item);
+      return entry ?? {
+        item,
+        supported: false,
+        answer: "Not supported by the retrieved evidence.",
+      };
+    });
+  }
+
+  return requestedItems.map((item) => ({
+    item,
+    supported: false,
+    answer: "Not supported by the retrieved evidence.",
+  }));
 };
 
 const verifyGroundingWithModel = async (
@@ -258,6 +377,9 @@ Return supported=false if:
 - the answer omits a clearly supported requested item without explicitly marking it unsupported
 - the answer invents extra requested items or extra unsupported items
 - the answer uses source attributions or citation formatting that the user did not ask for
+
+If a numeric value or factual statement is explicitly written in the retrieved context, treat it as supported even if the source text describes it as projected, estimated, analytical, or derived.
+If the answer includes an explicit qualifying condition that also appears in the retrieved context, treat that conditioned statement as supported rather than requiring it to be universal.
 `),
     new HumanMessage(
       `Question:\n${question}\n\nRequested items:\n- ${requestedItems.join("\n- ")}\n\nAnswer:\n${answer}\n\nRetrieved context:\n${context}`,
@@ -268,9 +390,11 @@ Return supported=false if:
 };
 
 export const retrieveNode = async (state: GraphState): Promise<GraphState> => {
+  const requestedItems = await planRequestedItems(state.question);
   const { lexical, vector } = await getIndexStore({ allowDenseMissing: true });
   const retrieval = await retrieveCrossDocument(lexical, vector, {
     query: state.question,
+    additionalQueries: requestedItems,
     topK: appConfig.retrieval.topK,
   });
 
@@ -287,6 +411,7 @@ export const retrieveNode = async (state: GraphState): Promise<GraphState> => {
 
   return {
     ...state,
+    requested_items: requestedItems,
     retrieval,
     trace: appendTrace(
       state.trace,
@@ -302,6 +427,7 @@ export const retrieveNode = async (state: GraphState): Promise<GraphState> => {
         degradationReasons: retrieval.degradation_reasons ?? [],
         denseEnabled: retrieval.dense_enabled,
         lexicalEnabled: retrieval.lexical_enabled,
+        requestedItems,
       },
     ),
   };
@@ -369,27 +495,17 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
   }
 
   const analysis = analyseCrossDocEvidence(chunks);
-  const systemPrompt = hasCrossCoverage
-    ? buildCrossDocSystemPrompt(analysis.structuredContext, analysis.synthesisInstruction, !evidencePassed)
-    : buildRagSystemPrompt(buildEvidenceContext(chunks), !evidencePassed);
-
-  const qualityPrompt = evidencePassed
-    ? "Proceed only with evidence-backed claims."
-    : "Available evidence is limited. Provide a conservative response and avoid unsupported claims.";
-
-  const chat = getChatModel();
-  const response = await chat.invoke([
-    new SystemMessage(systemPrompt),
-    new HumanMessage(
-      `Question: ${state.question}\n\n` +
-        `Requested answer items:\n- ${requestedItems.join("\n- ")}\n\n` +
-        `${hasCrossCoverage ? `Using ${analysis.documentCount} source document group(s).` : ""}\n` +
-        `Retrieved ${chunks.length} candidate chunks.\n${qualityPrompt}`,
-    ),
-  ]);
-
-  const answerRaw = parseChatResponse(response.content).trim();
-  const answer = answerRaw.length > 0 ? answerRaw : EVIDENCE_WARNING;
+  const itemResponses = await generateItemResponsesWithModel(
+    state.question,
+    requestedItems,
+    chunks,
+    hasCrossCoverage,
+  );
+  const supportedCount = itemResponses.filter((item) => item.supported).length;
+  const answer =
+    itemResponses.length > 0
+      ? formatRequestedItemResponses(itemResponses)
+      : EVIDENCE_WARNING;
 
   return {
     ...state,
@@ -407,6 +523,9 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
       {
         evidencePassed,
         requestedItems,
+        supportedItemCount: supportedCount,
+        itemResponses,
+        draftAnswer: answer,
         sourceCount: chunks.length,
         isMultiDocument: analysis.isMultiDocument,
         documentCount: analysis.documentCount,
@@ -454,15 +573,10 @@ export const verifyNode = async (state: GraphState): Promise<GraphState> => {
     };
   }
 
-  const normalizedAnswer = await normalizeAnswerPresentation(
-    state.question,
-    answer,
-  );
-
   const itemVerdict = await verifyRequestedItemsWithModel(
     state.question,
     requestedItems,
-    normalizedAnswer,
+    answer,
     state.retrieval?.chunks ?? [],
   );
 
@@ -485,36 +599,10 @@ export const verifyNode = async (state: GraphState): Promise<GraphState> => {
     };
   }
 
-  const groundingVerdict = await verifyGroundingWithModel(
-    state.question,
-    requestedItems,
-    normalizedAnswer,
-    state.retrieval?.chunks ?? [],
-  );
-
-  if (groundingVerdict && !groundingVerdict.supported) {
-    return {
-      ...state,
-      requested_items: requestedItems,
-      answer: EVIDENCE_WARNING,
-      citations: [],
-      trace: appendTrace(
-        state.trace,
-        "verify",
-        "failed",
-        "Grounding verifier rejected the generated answer.",
-        0.2,
-        {
-          verifierReason: groundingVerdict.reason,
-        },
-      ),
-    };
-  }
-
   return {
     ...state,
     requested_items: requestedItems,
-    answer: normalizedAnswer,
+    answer,
     citations: [],
     trace: appendTrace(
       state.trace,

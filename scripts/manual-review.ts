@@ -155,6 +155,9 @@ const main = async () => {
       console.log(
         `- ${trace.stage}: ${trace.status}${typeof trace.score === "number" ? ` (${trace.score.toFixed(3)})` : ""} ${trace.message}`,
       );
+      if (trace.details && Object.keys(trace.details).length > 0) {
+        console.log(`  details: ${JSON.stringify(trace.details, null, 2)}`);
+      }
     }
   }
 };
