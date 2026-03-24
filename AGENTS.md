@@ -33,7 +33,6 @@ These two files are fixture inputs only (legacy test corpus). The same runtime i
 - `src/llm/` or `src/lib/` : model and config helpers
 - `data/` : PDFs and local indexes
 - `scripts/` : ingest/smoke scripts, automation helpers
-- `scripts/ouroboros/` : Ouroboros setup wrapper and seeds
 
 ## Metadata requirements
 Every stored chunk must carry at least:
@@ -62,10 +61,6 @@ Every stored chunk must carry at least:
 - `npm run dev` -> run Next.js
 - `npm run ingest` -> ingest local PDFs
 - `npm run smoke` -> smoke queries
-- `npm run ouroboros:doctor` -> verify uv/uvx/git presence
-- `npm run ouroboros:install` -> install Ouroboros CLI
-- `npm run ouroboros:setup` -> setup wrapper
-- `npm run ouroboros -- <cmd>` -> run Ouroboros CLI
 
 ## Development principles for agents
 - Prefer explicit, readable, and modular TypeScript.
@@ -80,17 +75,21 @@ Use `.env.example` values and allow override:
 - `OLLAMA_CHAT_MODEL`
 - `OLLAMA_EMBEDDING_MODEL`
 - `OLLAMA_RERANK_MODEL`
-- retrieval tuning env vars used by retrieval module
+- `OLLAMA_CHAT_THINK`
+- `OLLAMA_CHAT_TEMPERATURE`
+- `OLLAMA_REQUEST_TIMEOUT_MS`
+- `INGEST_EMBED_BATCH_SIZE`
+- `INGEST_CHUNK_SIZE`
+- `INGEST_CHUNK_OVERLAP`
+- retrieval tuning env vars used by retrieval module:
+  - `RETRIEVAL_TOP_K`
+  - `RETRIEVAL_CANDIDATE_K`
 - `RETRIEVAL_ALLOW_DENSE_FALLBACK`
-- Cross-document retrieval env vars:
-  - `CROSS_DOC_MIN_FRACTION`
-  - `CROSS_DOC_MIN_CHUNKS`
-  - `CROSS_DOC_MAX_BROAD_QUERIES`
-  - `CROSS_DOC_MAX_PER_DOC_QUERIES`
+  - `RETRIEVAL_ENABLE_RERANK`
+  - `RETRIEVAL_RERANK_TOP_K`
 - `CORPUS_SOURCE_FILES` (preferred)
 - `CORPUS_CONFIG_JSON` (full explicit config, highest priority)
-- `OLLAMA_REQUEST_TIMEOUT_MS`
-
-## Notes on Ouroboros integration
-This project supports local Ouroboros CLI bootstrap only (`scripts/ouroboros/*`).
-`ooo setup` in upstream docs refers to Claude Code plugin flow; this repo additionally exposes `npm run ouroboros:setup` for direct terminal bootstrap.
+- `CORPUS_PATH`
+- `CHUNKS_PATH`
+- `VECTOR_STORE_PATH`
+- `LEXICAL_INDEX_PATH`

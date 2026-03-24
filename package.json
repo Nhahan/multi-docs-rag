@@ -13,10 +13,6 @@
     "smoke:primary": "tsx scripts/smoke-primary-fixture.ts",
     "smoke:secondary": "tsx scripts/smoke-secondary-fixture.ts",
     "smoke:hard-multidoc": "tsx scripts/smoke-hard-multidoc.ts",
-    "ouroboros:install": "bash ./scripts/ouroboros/install.sh",
-    "ouroboros:doctor": "bash ./scripts/ouroboros/doctor.sh",
-    "ouroboros:setup": "bash ./scripts/ouroboros/cli.sh setup",
-    "ouroboros": "bash ./scripts/ouroboros/cli.sh",
     "test": "vitest run",
     "test:watch": "vitest"
   },
