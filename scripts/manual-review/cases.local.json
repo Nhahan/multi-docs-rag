@@ -57,14 +57,14 @@
     {
       "id": "hard-multidoc",
       "category": "hard multi-doc",
-      "question": "Using agent-memory-below-the-prompt and cfr-code-of-federal-regulations, what is the maximum number of 8K-context agents supported for FP16 and Q4, what are the 4K cold, warm, and hot latencies, and which three CFR controls or section numbers are most directly relevant to this system? If any requested item is not supported by the retrieved evidence, say so explicitly.",
+      "question": "Report the 8K agent counts for FP16 and Q4 from agent-memory-below-the-prompt. Then say whether the retrieved CFR evidence directly supports matching compliance controls for that system. If not, say the CFR part is not supported by the retrieved evidence.",
       "reviewer_focus": [
         "multi-doc grounding",
         "numeric grounding",
         "unsupported handling",
         "avoid irrelevant CFR mapping"
       ],
-      "notes": "This is a manual review case. Unsupported CFR mapping is acceptable if the cited evidence does not justify it."
+      "notes": "This is the primary hard quality gate. Review it manually and judge whether the answer stays grounded, answers the paper-side counts correctly, and refuses unsupported CFR mapping."
     }
   ]
 }

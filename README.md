@@ -2,13 +2,12 @@
 
 Local multi-document RAG built with Next.js, TypeScript, LangChain, LangGraph, and Ollama-compatible local models.
 
-The project is designed to ingest local PDF corpora, build local indexes, retrieve evidence with hybrid search, and generate citation-grounded answers without external cloud LLM APIs.
+The project ingests local PDF corpora, builds local indexes, retrieves evidence with hybrid search, and generates grounded answers without external cloud LLM APIs.
 
 ## Highlights
 
 - Server-side PDF ingestion, chunking, embedding, retrieval, reranking, and answer generation
 - Hybrid retrieval with lexical and dense search
-- Page-based inline citations
 - Grounded refusal when retrieved evidence is insufficient
 - Debug-friendly API and UI surfaces for retrieval inspection
 - Local-first runtime using Ollama-compatible models
@@ -39,8 +38,7 @@ End-to-end flow:
 5. Retrieve evidence with hybrid search
 6. Rerank retrieved chunks
 7. Generate an answer from retrieved evidence only
-8. Verify grounding against cited evidence
-9. Return page-based citations
+8. Verify grounding against retrieved evidence
 
 All of this runs on the server.
 
@@ -54,7 +52,6 @@ All of this runs on the server.
 - `src/retrieval/`: lexical, dense, fusion, and rerank logic
 - `src/graph/`: workflow orchestration nodes
 - `src/prompts/`: generation prompts
-- `src/citations/`: citation extraction and formatting
 - `src/synthesis/`: cross-document synthesis helpers
 - `src/lib/`: config, model, and local store helpers
 - `data/`: source PDFs and generated indexes
@@ -89,6 +86,8 @@ Start the app:
 ```bash
 npm run dev
 ```
+
+The Next.js app is expected to run on `http://localhost:3333`.
 
 ## Ingest local documents
 
@@ -139,7 +138,6 @@ npm run review:manual -- --file scripts/manual-review/my-cases.json
 This harness does not auto-pass or auto-fail cases. It prints:
 
 - the full answer
-- inline citations
 - evidence availability summary
 - document mix
 - top retrieved chunks
@@ -151,6 +149,54 @@ Files under `scripts/manual-review/` are review inputs only.
 - `cases.template.json`: generic template for arbitrary corpora
 
 These files are not runtime policy.
+
+## Evaluation difficulty ladder
+
+The project uses a three-level difficulty model when discussing evaluation quality:
+
+### 1. Baseline
+
+Used to validate basic retrieval and grounded answering.
+
+- single-doc factual
+- single-doc summary
+- identifier-heavy retrieval
+
+### 2. Intermediate
+
+Used to validate generic multi-document behavior without overloading a single question.
+
+- multi-doc synthesis
+- unsupported handling
+- multilingual query
+
+### 3. Hard
+
+Used to validate cross-document reasoning under realistic local-LLM constraints.
+
+- cross-doc relation
+- partial support plus partial unsupported
+- each question should test only one or two core goals
+
+### Active testing policy
+
+In practice, this repository should use only one active `hard` test question for routine evaluation.
+
+Reason:
+
+- local LLMs have tighter reasoning and latency budgets
+- overly dense test questions mix too many failure modes at once
+- one professional-grade hard case is easier to interpret and maintain than a large set of unstable stress questions
+
+Stress-style questions can still be useful for debugging, but they should be treated as manual investigation prompts rather than the main quality gate.
+
+The active hard gate question is:
+
+```text
+Report the 8K agent counts for FP16 and Q4 from agent-memory-below-the-prompt. Then say whether the retrieved CFR evidence directly supports matching compliance controls for that system. If not, say the CFR part is not supported by the retrieved evidence.
+```
+
+This gate is judged by manual answer review, not by automatic scoring.
 
 ## Query API
 
@@ -171,11 +217,7 @@ Response shape:
 {
   "question": "...",
   "answer": "...",
-  "citations": ["[document-a p.12]"],
-  "citation_entries": ["[document-a p.12] ..."],
-  "citation_footer": "Sources: ...",
-  "has_citations": true,
-  "quality": {
+  "evidence": {
     "passed": true,
     "candidate_count": 6,
     "top_score": 0.12,
@@ -195,9 +237,9 @@ Response shape:
 
 Notes:
 
-- `quality` currently represents evidence availability, not calibrated semantic confidence
+- `evidence` represents evidence availability, not calibrated semantic confidence
 - `retrieval.chunks` is primarily for debugging and inspection
-- citations are deterministic and page-based
+- final answers are plain grounded text by default
 
 ### `POST /api/ingest`
 
