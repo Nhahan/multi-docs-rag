@@ -952,6 +952,10 @@ Rules:
 - Preserve each requested item exactly.
 - For each requested item, decide whether the retrieved evidence directly supports it.
 - If supported, write a concise self-contained user-facing answer for that item using only retrieved evidence.
+- Keep every field brief. Prefer short phrases over full quotations.
+- support_text must be a single short phrase or sentence fragment of at most 25 words.
+- reasoning must be a single short sentence of at most 20 words.
+- primary_controls, supporting_safeguards, and matched_pairs must contain at most 4 entries each, and each entry must stay under 12 words.
 - For every item, populate support_text with the brief evidence phrase, row, control name, requirement text, or metric wording that most directly supports the decision.
 - For every item, populate reasoning with one short sentence explaining why that support_text does or does not answer the requested item.
 - Supported answers must be complete sentences, not bare values, fragments, labels, or isolated numbers.
@@ -1049,6 +1053,10 @@ Return JSON only in this shape:
 Rules:
 - Preserve each requested item exactly.
 - First judge whether the current candidate answer is correct given the item-scoped retrieved context.
+- Keep every field brief. Prefer short phrases over full quotations.
+- support_text must be a single short phrase or sentence fragment of at most 25 words.
+- reasoning must be a single short sentence of at most 20 words.
+- primary_controls, supporting_safeguards, and matched_pairs must contain at most 4 entries each, and each entry must stay under 12 words.
 - Compare the primary-source controls, requirements, sections, or safeguards against the supporting-source behaviors, safeguards, records, access patterns, or data-handling needs.
 - Treat the item as supported when the primary-source text explicitly lists controls or requirements that match the target system's described behaviors or safeguards, even if the primary source does not name the target system verbatim.
 - Do not reject the item only because the governing source and the target system come from different domains.
@@ -1130,6 +1138,10 @@ Use the items array to provide the grounded final resolution for every requested
 If the current answer or resolved items are wrong but the retrieved evidence supports a corrected answer, correct them in the items array.
 Set supported=true when the items array provides a fully grounded final resolution for all requested items.
 Set supported=false only when the retrieved evidence is insufficient to produce a grounded final resolution for one or more requested items.
+- Keep every field brief. Prefer short phrases over full quotations.
+- support_text must be a single short phrase or sentence fragment of at most 25 words.
+- reasoning must be a single short sentence of at most 20 words.
+- primary_controls, supporting_safeguards, and matched_pairs must contain at most 4 entries each, and each entry must stay under 12 words.
 
 For supported items, require that the item's answer matches its support_text and that the support_text directly supports the exact requested item rather than a nearby metric, qualifier, row, or condition.
 If a value is explicitly present in the retrieved context, treat it as supported only when it matches the requested subject and qualifier. Preserve stated qualifiers and conditions.
@@ -1472,25 +1484,7 @@ export const verifyNode = async (state: GraphState): Promise<GraphState> => {
           );
         })
       : itemResponses;
-  const crossSourceOverrides = await Promise.all(
-    requestedItems.map(async (descriptor) => {
-      if (descriptor.supporting_source_ids.length === 0) {
-        return null;
-      }
-      const bundle = itemContexts.find((context) => context.item === descriptor.item);
-      if (!bundle) {
-        return null;
-      }
-      const current = correctedItemResponses.find((entry) => entry.item === descriptor.item) ?? null;
-      return resolveCrossSourceItemWithModel(state.question, descriptor, bundle, current);
-    }),
-  );
-  const crossSourceOverrideMap = new Map(
-    crossSourceOverrides
-      .filter((value): value is ItemAnswerPlan => Boolean(value))
-      .map((entry) => [entry.item, entry]),
-  );
-  const finalItemResponses = correctedItemResponses.map((entry) => crossSourceOverrideMap.get(entry.item) ?? entry);
+  const finalItemResponses = correctedItemResponses;
   const hasGroundedItemResolution =
     finalItemResponses.length === requestedItems.length &&
     finalItemResponses.every(

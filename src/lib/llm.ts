@@ -4,6 +4,11 @@ import { appConfig } from "./config";
 const modelCache = new Map<string, ChatOllama>();
 const embeddingCache = new Map<string, OllamaEmbeddings>();
 
+type ChatModelOverrides = {
+  numPredict?: number;
+  format?: string | Record<string, any>;
+};
+
 const createTimedFetch = (timeoutMs = appConfig.runtime.ollamaRequestTimeoutMs) => {
   return async (input: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1] = undefined) => {
     const controller = new AbortController();
@@ -25,14 +30,21 @@ const createTimedFetch = (timeoutMs = appConfig.runtime.ollamaRequestTimeoutMs) 
 
 const timedFetch = createTimedFetch();
 
-export const getChatModel = (modelName = appConfig.models.chatModel) => {
-  const key = `${appConfig.models.baseUrl}|${modelName}`;
+export const getChatModel = (
+  modelName = appConfig.models.chatModel,
+  overrides: ChatModelOverrides = {},
+) => {
+  const numPredict = overrides.numPredict ?? appConfig.runtime.ollamaChatNumPredict;
+  const format = overrides.format;
+  const key = `${appConfig.models.baseUrl}|${modelName}|${numPredict}|${typeof format === "string" ? format : JSON.stringify(format ?? null)}`;
   if (!modelCache.has(key)) {
     modelCache.set(
       key,
       new ChatOllama({
         baseUrl: appConfig.models.baseUrl,
         model: modelName,
+        numPredict,
+        format,
         temperature: appConfig.runtime.ollamaChatTemperature,
         think: appConfig.runtime.ollamaChatThink,
         fetch: timedFetch,
