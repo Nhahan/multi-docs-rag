@@ -1,6 +1,6 @@
 import { START, END, StateGraph, Annotation } from "@langchain/langgraph";
 import { evidenceGateNode, generateNode, retrieveNode, verifyNode } from "./nodes";
-import { GraphState, RetrievalResult, EvidenceAvailability, PipelineStageTrace } from "../types/rag";
+import { GraphState, RetrievalResult, EvidenceAvailability, PipelineStageTrace, RequestedItemDescriptor, ItemContextBundle } from "../types/rag";
 
 const GraphStateShape = Annotation.Root({
   question: Annotation<string>({
@@ -11,7 +11,11 @@ const GraphStateShape = Annotation.Root({
     reducer: (_, next) => next,
     default: () => undefined,
   }),
-  requested_items: Annotation<string[] | undefined>({
+  requested_items: Annotation<RequestedItemDescriptor[] | undefined>({
+    reducer: (_, next) => next ?? [],
+    default: () => [],
+  }),
+  item_contexts: Annotation<ItemContextBundle[] | undefined>({
     reducer: (_, next) => next ?? [],
     default: () => [],
   }),

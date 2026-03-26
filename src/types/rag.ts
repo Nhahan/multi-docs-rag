@@ -60,10 +60,34 @@ export interface RetrievalResult {
   lexical_enabled?: boolean;
 }
 
+export interface RequestedItemDescriptor {
+  item: string;
+  retrieval_query: string;
+  supporting_retrieval_query: string;
+  primary_source_ids: string[];
+  supporting_source_ids: string[];
+}
+
+export interface ItemContextBundle {
+  item: string;
+  primary_source_ids: string[];
+  supporting_source_ids: string[];
+  primary_chunks: ScoredChunk[];
+  supporting_chunks: ScoredChunk[];
+}
+
 export interface GraphState {
   question: string;
   retrieval?: RetrievalResult;
-  requested_items?: string[];
+  requested_items?: RequestedItemDescriptor[];
+  item_contexts?: ItemContextBundle[];
+  item_responses?: Array<{
+    item: string;
+    supported: boolean;
+    answer: string;
+    support_text?: string;
+    reasoning?: string;
+  }>;
   answer?: string;
   citations?: string[];
   debug?: boolean;

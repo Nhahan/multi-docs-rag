@@ -83,6 +83,7 @@ Rules:
 - Preserve scope. Do not broaden to comparisons, baselines, or related systems unless asked.
 - If helpful, split a multi-part question into shorter evidence-seeking queries.
 - If helpful, include one English query for cross-lingual retrieval.
+- For policy, control, or section-identification items, keep the governing source and the concrete behavior or topic terms together in at least one query.
 - Keep queries short and concrete.
 - Return JSON only: {"queries":["..."]}.
 
