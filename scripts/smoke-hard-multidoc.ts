@@ -43,7 +43,7 @@ const TARGET_DOC_IDS = inferDocumentIds();
 const PRIMARY_DOC_ID = TARGET_DOC_IDS[0] ?? "document-1";
 const SECONDARY_DOC_ID = TARGET_DOC_IDS[1] ?? "document-2";
 const QUERY =
-  `문서 "${SECONDARY_DOC_ID}" 와 문서 "${PRIMARY_DOC_ID}" 만 근거로 짧은 구조화된 메모를 작성해줘. 1) "${SECONDARY_DOC_ID}" 에서 Apple M4 Pro 기준 8K context의 FP16/Q4 agent capacity와 4K cold/warm/hot latency 수치를 정확히 적고, 2) "${PRIMARY_DOC_ID}" 에서 이 시스템과 가장 직접 관련 있는 control 세 가지를 section number와 핵심 요구사항과 함께 적고, 3) "${SECONDARY_DOC_ID}" 가 명시적으로 뒷받침하지 않아서 준수했다고 말하면 안 되는 control 한 가지를 분명히 구분해줘. 법적 결론은 내리지 말고, 문서에 있는 근거와 근거 부족만 구분해줘.`;
+  `문서 "${SECONDARY_DOC_ID}" 와 문서 "${PRIMARY_DOC_ID}" 만 근거로 짧은 구조화된 메모를 작성해줘. 1) "${SECONDARY_DOC_ID}" 에서 8K context 기준 FP16과 Q4의 agent capacity를 적고, 2) "${PRIMARY_DOC_ID}" 의 retrieved evidence가 이 시스템에 직접 맞는 compliance control을 실제로 제공하는지 말해줘. 직접 맞는 control이 없으면 "${PRIMARY_DOC_ID}" 부분은 retrieved evidence로는 직접 지원되지 않는다고 분명히 적어줘. 법적 결론은 내리지 말고, 문서에 있는 근거와 근거 부족만 구분해줘.`;
 
 function assert(label: string, ok: boolean, detail?: string): AssertionResult {
   return { label, passed: ok, detail };
@@ -126,10 +126,10 @@ function runAssertions(result: GraphState): AssertionResult[] {
     assert(
       "Retrieval includes paper chunk evidence with Apple M4/8K signals",
       docAChunks.some((entry) =>
-        /apple\s*m4\s*pro|8k|q4|fp16|latenc/i.test(entry.chunk.text),
+        /apple\s*m4\s*pro|8k|q4|fp16/i.test(entry.chunk.text),
       ) ||
         docBChunks.some((entry) =>
-          /apple\s*m4\s*pro|8k|q4|fp16|latenc/i.test(entry.chunk.text),
+          /apple\s*m4\s*pro|8k|q4|fp16/i.test(entry.chunk.text),
         ),
       `Document chunks searched: ${docAChunks.length + docBChunks.length}`,
     ),

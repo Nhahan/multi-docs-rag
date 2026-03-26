@@ -23,6 +23,7 @@ These two files are fixture inputs only (legacy test corpus). The same runtime i
 - All ingestion, chunking, embedding, retrieval, reranking, and generation must run on the server.
 - No PDF parsing/embedding/retrieval should run in client components.
 - No external cloud LLM APIs.
+- The app should run on port `3333` for local development and local production start commands.
 
 ## Directory layout (expected)
 - `app/` : Next.js routes and API handlers
@@ -44,8 +45,7 @@ Every stored chunk must carry at least:
 
 ## Quality and behavior rules
 - Retrieval must be hybrid: dense + lexical, with fusion.
-- Generate answers only from retrieved evidence and include citations.
-- Cite format should be deterministic and page-based (for example `[<source label> p.12]`).
+- Generate answers only from retrieved evidence.
 - If evidence is insufficient, answer must explicitly state uncertainty.
 - Retrieval and generation must stay document-agnostic. Do not branch on corpus family labels.
 

@@ -172,7 +172,7 @@ export const appConfig = {
     enableRerank: (process.env.RETRIEVAL_ENABLE_RERANK ?? "true").toLowerCase() !== "false",
   },
   runtime: {
-    ollamaRequestTimeoutMs: Number(process.env.OLLAMA_REQUEST_TIMEOUT_MS ?? 120000),
+    ollamaRequestTimeoutMs: Number(process.env.OLLAMA_REQUEST_TIMEOUT_MS ?? 300000),
     ollamaChatThink: parseBooleanEnv(
       process.env.OLLAMA_CHAT_THINK ?? process.env.OLLAMA_THINK,
       false,
