@@ -1,7 +1,7 @@
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { appConfig } from "../lib/config";
 import { buildEvidenceContext, summarizeCitations } from "../citations/citationExtractor";
-import { getChatModel } from "../lib/llm";
+import { getChatModel, getRerankEmbeddingModel } from "../lib/llm";
 import { getIndexStore } from "../lib/store";
 import { buildCrossDocSystemPrompt, buildRagSystemPrompt } from "../prompts/rag";
 import { hasMultiDocumentCoverage, getDocumentCoverageSummary, retrieveCrossDocument } from "../retrieval/crossDocRetriever";
@@ -505,35 +505,6 @@ const buildItemScopedContexts = (
 const ITEM_CONTEXT_PRIMARY_LIMIT = appConfig.retrieval.topK;
 const ITEM_CONTEXT_SUPPORTING_LIMIT = appConfig.retrieval.topK * 2;
 
-const extractBridgeTermsFromPrimaryContext = async (
-  item: string,
-  primaryChunks: ScoredChunk[],
-): Promise<string[]> => {
-  if (primaryChunks.length === 0) {
-    return [];
-  }
-
-  const chat = getChatModel();
-  const primaryContext = buildEvidenceContext(primaryChunks.slice(0, ITEM_CONTEXT_PRIMARY_LIMIT));
-  const response = await chat.invoke([
-    new SystemMessage(`
-Return JSON only:
-{"terms":["..."]}
-
-Extract short generic control, safeguard, record-handling, or compliance-category phrases from the governing-source context that should be used to retrieve matching behavior descriptions from another source.
-
-Rules:
-- Use only category phrases visible in or directly implied by the governing-source context.
-- Prefer short phrases such as access control, audit trails, authority checks, record integrity, validation, electronic records, electronic signatures, confidentiality, or record linking when those categories are present.
-- Do not return source names, law names, section numbers, product names, page numbers, or implementation-specific nouns.
-- Do not explain. Return only the JSON object.
-`),
-    new HumanMessage(`Requested item:\n${item}\n\nGoverning-source context:\n${primaryContext}`),
-  ]);
-
-  return parseRetrievalTermPlan(parseChatResponse(response.content))?.terms ?? [];
-};
-
 const hydrateItemContextBundles = async (
   question: string,
   requestedItems: RequestedItemDescriptor[],
@@ -562,39 +533,58 @@ const hydrateItemContextBundles = async (
                 });
                 return retrieval.chunks;
               }),
-            ).then((bundles) => mergeBundleChunks(bundles).slice(0, ITEM_CONTEXT_PRIMARY_LIMIT))
+            ).then(async (bundles) => {
+              const merged = mergeBundleChunks(bundles);
+              const queryReranked = await rerankItemContextChunks(merged, [descriptor.retrieval_query], vector);
+              return rerankByAnchorChunks(
+                queryReranked,
+                scopedContext.supportingChunks,
+                vector,
+              ).slice(0, ITEM_CONTEXT_PRIMARY_LIMIT);
+            })
           : scopedContext.primaryChunks.slice(0, ITEM_CONTEXT_PRIMARY_LIMIT);
-
-      const bridgeTerms =
-        descriptor.supporting_source_ids.length > 0
-          ? await extractBridgeTermsFromPrimaryContext(descriptor.item, primaryChunks)
-          : [];
 
       const supportingChunks =
         descriptor.supporting_source_ids.length > 0
           ? await Promise.all(
               descriptor.supporting_source_ids.map(async (documentId) => {
+                const primaryProjection = buildEvidenceContext(
+                  primaryChunks.slice(0, Math.min(3, primaryChunks.length)),
+                );
                 const retrieval = await retrieveCrossDocument(lexical, vector, {
                   query: buildSourceScopedQuery(
                     [documentId],
-                    bridgeTerms.join(" "),
+                    descriptor.supporting_retrieval_query || descriptor.item,
                     question,
                     descriptor.primary_source_ids,
                   ),
-                  additionalQueries: [],
-                  topK: appConfig.retrieval.topK,
+                  additionalQueries: primaryProjection ? [primaryProjection] : [],
+                  topK: ITEM_CONTEXT_SUPPORTING_LIMIT,
                   filterDocumentIds: [documentId],
                 });
                 return retrieval.chunks;
               }),
-            ).then((bundles) =>
-              mergeBundleChunks([
+            ).then(async (bundles) => {
+              const merged = mergeBundleChunks([
                 ...bundles,
                 questionScopedChunks.filter((chunk) =>
                   descriptor.supporting_source_ids.includes(chunk.chunk.metadata.document_id),
                 ),
-              ]).slice(0, ITEM_CONTEXT_SUPPORTING_LIMIT),
-            )
+              ]);
+              const primaryProjection = buildEvidenceContext(
+                primaryChunks.slice(0, Math.min(3, primaryChunks.length)),
+              );
+              const reranked = await rerankItemContextChunks(
+                merged,
+                [descriptor.supporting_retrieval_query || descriptor.item, primaryProjection],
+                vector,
+              );
+              return rerankByAnchorChunks(
+                reranked,
+                primaryChunks,
+                vector,
+              ).slice(0, ITEM_CONTEXT_SUPPORTING_LIMIT);
+            })
           : scopedContext.supportingChunks.slice(0, ITEM_CONTEXT_SUPPORTING_LIMIT);
 
       return {
@@ -748,6 +738,8 @@ Rules:
 - retrieval_query should preserve the governing or reporting source and the concrete topic terms needed for the primary source, but remove answer instructions and extra wording.
 - supporting_retrieval_query should preserve the supporting source and the concrete target-system behavior, capability, safeguard, or topic needed from that supporting source.
 - For governing-source support items, supporting_retrieval_query should prefer explicit safeguard or compliance phrases from the supporting source over low-level implementation nouns when those phrases are present in the supporting source.
+- supporting_retrieval_query must stay grounded in explicit supporting-source behaviors or safeguard phrases. Do not use generic verdict phrases such as "evidence for compliance controls", "matching controls", or "compliance support" unless those phrases are themselves visible in the supporting source.
+- If the supporting source describes concrete behaviors, records, safeguards, audit features, access boundaries, integrity properties, confidentiality properties, or deletion/retention behavior, use those concrete phrases in supporting_retrieval_query instead of generic compliance language.
 - retrieval_query should name or anchor only the primary source, not the supporting source.
 - supporting_retrieval_query should name or anchor only the supporting source, not the primary source.
 - If an item has no supporting source, supporting_source_ids must be [] and supporting_retrieval_query must be an empty string.
@@ -760,6 +752,7 @@ Rules:
 - For an item asking whether a governing source supports matching controls or requirements for another named system or method, the governing source belongs in primary_source_ids and the target system source belongs in supporting_source_ids.
 - For any cross-source item, primary_source_ids must contain exactly one governing or reporting source id and must never be empty. supporting_source_ids must not repeat the primary source id.
 - Do not invent extra items.
+- When supporting-source evidence is available, prefer explicit supporting-source safeguard, record, audit, access, integrity, confidentiality, or deletion phrases that are visible in the evidence.
 `),
       new HumanMessage(`Question:\n${question}`),
     ]);
@@ -800,6 +793,114 @@ const mergeBundleChunks = (bundles: ScoredChunk[][]): ScoredChunk[] => {
   }
 
   return [...merged.values()];
+};
+
+const rerankItemContextChunks = async (
+  candidates: ScoredChunk[],
+  queries: string[],
+  vectorStore: { getVectorForChunk: (chunkId: string) => number[] | undefined } | null,
+): Promise<ScoredChunk[]> => {
+  if (!vectorStore || candidates.length === 0) {
+    return candidates;
+  }
+
+  const normalizedQueries = dedupeNormalizedStrings(queries.map((value) => value.trim()).filter(Boolean));
+  if (normalizedQueries.length === 0) {
+    return candidates;
+  }
+
+  try {
+    const reranker = getRerankEmbeddingModel();
+    const queryVectors = await reranker.embedDocuments(normalizedQueries);
+    return [...candidates]
+      .map((entry) => {
+        const vector = vectorStore.getVectorForChunk(entry.chunk.id);
+        if (!vector) return entry;
+        const cNorm = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0));
+        let sim = Number.NEGATIVE_INFINITY;
+        for (const queryVector of queryVectors) {
+          if (!Array.isArray(queryVector) || queryVector.length === 0) continue;
+          const dot = queryVector.reduce((sum, _, index) => sum + queryVector[index] * (vector[index] ?? 0), 0);
+          const qNorm = Math.sqrt(queryVector.reduce((sum, value) => sum + value * value, 0));
+          const candidateSim = qNorm && cNorm ? dot / (qNorm * cNorm) : 0;
+          if (candidateSim > sim) {
+            sim = candidateSim;
+          }
+        }
+        return {
+          ...entry,
+          rerankScore: Number.isFinite(sim) ? sim : 0,
+        };
+      })
+      .sort((a, b) => {
+        const left = typeof a.rerankScore === "number" ? a.rerankScore : Number.NEGATIVE_INFINITY;
+        const right = typeof b.rerankScore === "number" ? b.rerankScore : Number.NEGATIVE_INFINITY;
+        if (right !== left) {
+          return right - left;
+        }
+        return b.score - a.score;
+      });
+  } catch {
+    return candidates;
+  }
+};
+
+const rerankByAnchorChunks = (
+  candidates: ScoredChunk[],
+  anchorChunks: ScoredChunk[],
+  vectorStore: { getVectorForChunk: (chunkId: string) => number[] | undefined } | null,
+): ScoredChunk[] => {
+  if (!vectorStore || candidates.length === 0 || anchorChunks.length === 0) {
+    return candidates;
+  }
+
+  const anchorVectors = anchorChunks
+    .map((entry) => vectorStore.getVectorForChunk(entry.chunk.id))
+    .filter((value): value is number[] => Array.isArray(value) && value.length > 0);
+  if (anchorVectors.length === 0) {
+    return candidates;
+  }
+
+  const cosineSimilarity = (left: number[], right: number[]): number => {
+    if (left.length !== right.length) return 0;
+    let dot = 0;
+    let leftNorm = 0;
+    let rightNorm = 0;
+    for (let index = 0; index < left.length; index += 1) {
+      dot += left[index] * right[index];
+      leftNorm += left[index] * left[index];
+      rightNorm += right[index] * right[index];
+    }
+    if (leftNorm === 0 || rightNorm === 0) return 0;
+    return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
+  };
+
+  return [...candidates]
+    .map((entry) => {
+      const vector = vectorStore.getVectorForChunk(entry.chunk.id);
+      if (!vector) {
+        return entry;
+      }
+      let anchorScore = Number.NEGATIVE_INFINITY;
+      for (const anchorVector of anchorVectors) {
+        const similarity = cosineSimilarity(vector, anchorVector);
+        if (similarity > anchorScore) {
+          anchorScore = similarity;
+        }
+      }
+      return {
+        ...entry,
+        rerankScore: Number.isFinite(anchorScore) ? anchorScore : 0,
+      };
+    })
+    .sort((a, b) => {
+      const left = typeof a.rerankScore === "number" ? a.rerankScore : Number.NEGATIVE_INFINITY;
+      const right = typeof b.rerankScore === "number" ? b.rerankScore : Number.NEGATIVE_INFINITY;
+      if (right !== left) {
+        return right - left;
+      }
+      return b.score - a.score;
+    });
 };
 
 const formatFinalItemAnswer = (
@@ -1304,6 +1405,8 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
         requestedItems: getRequestedItemLabels(requestedItems),
         itemContextCoverage: itemContexts.map((context) => ({
           item: context.item,
+          primaryQuery: requestedItems.find((entry) => entry.item === context.item)?.retrieval_query ?? "",
+          supportingQuery: requestedItems.find((entry) => entry.item === context.item)?.supporting_retrieval_query ?? "",
           primaryDocuments: Array.from(new Set(context.primary_chunks.map((chunk) => chunk.chunk.metadata.document_id))),
           supportingDocuments: Array.from(new Set(context.supporting_chunks.map((chunk) => chunk.chunk.metadata.document_id))),
           primaryTopPages: context.primary_chunks.slice(0, 6).map((chunk) => chunk.chunk.metadata.page),
