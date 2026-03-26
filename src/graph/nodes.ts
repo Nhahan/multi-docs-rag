@@ -1271,6 +1271,7 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
       : itemResponses;
   const finalChunks = chunks;
   const analysis = analyseCrossDocEvidence(finalChunks);
+  const draftSupportedCount = itemResponses.filter((item) => item.supported).length;
   const supportedCount = finalItemResponses.filter((item) => item.supported).length;
   const answer =
     finalItemResponses.length > 0
@@ -1308,6 +1309,8 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
           primaryTopPages: context.primary_chunks.slice(0, 6).map((chunk) => chunk.chunk.metadata.page),
           supportingTopPages: context.supporting_chunks.slice(0, 6).map((chunk) => chunk.chunk.metadata.page),
         })),
+        draftSupportedItemCount: draftSupportedCount,
+        draftItemResponses: itemResponses,
         supportedItemCount: supportedCount,
         itemResponses: finalItemResponses,
         resolutionReason: itemVerdict?.reason ?? "",

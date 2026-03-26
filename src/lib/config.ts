@@ -177,7 +177,7 @@ export const appConfig = {
       process.env.OLLAMA_CHAT_THINK ?? process.env.OLLAMA_THINK,
       false,
     ),
-    ollamaChatNumPredict: clampToPositiveInt(process.env.OLLAMA_CHAT_NUM_PREDICT, 2048),
+    ollamaChatNumPredict: clampToPositiveInt(process.env.OLLAMA_CHAT_NUM_PREDICT, 1000),
     ollamaChatTemperature: clampToPositiveFloatRange(
       process.env.OLLAMA_CHAT_TEMPERATURE,
       0.0,
