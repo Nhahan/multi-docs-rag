@@ -56,26 +56,38 @@ const extractReferencedDocumentIds = (text: string): string[] => {
     return { entry, tokens };
   });
 
-  const matches: string[] = [];
+  const matches: { documentId: string; position: number }[] = [];
 
   for (const { entry, tokens } of corpusTokens) {
+    let position = Number.POSITIVE_INFINITY;
     if (
       normalized.includes(entry.document_id.toLowerCase()) ||
       normalized.includes(entry.source_file.toLowerCase())
     ) {
-      matches.push(entry.document_id);
+      const directPositions = [
+        normalized.indexOf(entry.document_id.toLowerCase()),
+        normalized.indexOf(entry.source_file.toLowerCase()),
+      ].filter((value) => value >= 0);
+      position = Math.min(...directPositions);
+      matches.push({ documentId: entry.document_id, position });
       continue;
     }
 
-    const hasDistinctiveTokenMatch = tokens.some(
-      (token) => queryTokens.has(token) && tokenFrequency.get(token) === 1,
-    );
-    if (hasDistinctiveTokenMatch) {
-      matches.push(entry.document_id);
+    const distinctiveTokenPositions = tokens
+      .filter((token) => queryTokens.has(token) && tokenFrequency.get(token) === 1)
+      .map((token) => normalized.indexOf(token))
+      .filter((value) => value >= 0);
+    if (distinctiveTokenPositions.length > 0) {
+      position = Math.min(...distinctiveTokenPositions);
+      matches.push({ documentId: entry.document_id, position });
     }
   }
 
-  return dedupeNormalizedStrings(matches);
+  return dedupeNormalizedStrings(
+    matches
+      .sort((left, right) => left.position - right.position)
+      .map((entry) => entry.documentId),
+  );
 };
 
 const getRetrievedDocumentIds = (chunks: ScoredChunk[]): Set<string> =>
@@ -137,12 +149,19 @@ type RequestedItemPlan = {
   items: RequestedItemDescriptor[];
 };
 
+type RetrievalTermPlan = {
+  terms: string[];
+};
+
 type ItemAnswerPlan = {
   item: string;
   supported: boolean;
   answer: string;
   support_text?: string;
   reasoning?: string;
+  primary_controls?: string[];
+  supporting_safeguards?: string[];
+  matched_pairs?: string[];
 };
 
 
@@ -220,6 +239,7 @@ const parseItemGroundingVerdict = (raw: string): ItemGroundingVerdict | null => 
           ? String((parsed as { reason?: unknown }).reason)
           : "",
       items,
+      raw_response: raw,
     };
   } catch {
     return null;
@@ -303,6 +323,31 @@ const parseRequestedItemPlan = (raw: string): RequestedItemPlan | null => {
   return null;
 };
 
+const parseRetrievalTermPlan = (raw: string): RetrievalTermPlan | null => {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/u);
+  const candidate = fenced?.[1]?.trim() ?? trimmed;
+  const normalizedCandidate = candidate.replace(/,\s*([}\]])/gu, "$1");
+
+  try {
+    const parsed = JSON.parse(normalizedCandidate) as unknown;
+    if (!parsed || typeof parsed !== "object" || !Array.isArray((parsed as { terms?: unknown }).terms)) {
+      return null;
+    }
+    return {
+      terms: dedupeNormalizedStrings(
+        ((parsed as { terms: unknown[] }).terms ?? [])
+          .filter((value): value is string => typeof value === "string")
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ).slice(0, 8),
+    };
+  } catch {
+    return null;
+  }
+};
+
 const corpusDocumentIds = new Set(appConfig.corpus.map((entry) => entry.document_id));
 
 const resolveExplicitDocumentIds = (values: string[]): string[] =>
@@ -320,6 +365,52 @@ const resolveDocumentIds = (values: string[], fallbackText: string): string[] =>
   }
 
   return extractReferencedDocumentIds(fallbackText).filter((value) => corpusDocumentIds.has(value));
+};
+
+const stripDocumentReferences = (text: string): string => {
+  let stripped = text;
+  for (const entry of appConfig.corpus) {
+    const patterns = [entry.document_id, entry.source_file]
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0)
+      .map((value) => value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"));
+    for (const pattern of patterns) {
+      stripped = stripped.replace(new RegExp(pattern, "igu"), " ");
+    }
+  }
+  return stripped.replace(/\s+/gu, " ").trim();
+};
+
+const stripReferencedSourceTokens = (text: string, sourceIds: string[]): string => {
+  let stripped = text;
+  const referencedEntries = appConfig.corpus.filter((entry) => sourceIds.includes(entry.document_id));
+  for (const entry of referencedEntries) {
+    const tokens = dedupeNormalizedStrings([
+      ...tokenizeReferenceText(entry.document_id),
+      ...tokenizeReferenceText(entry.source_file),
+    ]).filter((token) => token.length >= 3);
+    for (const token of tokens) {
+      stripped = stripped.replace(new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}\\b`, "igu"), " ");
+    }
+  }
+  return stripped.replace(/\s+/gu, " ").trim();
+};
+
+const buildSourceScopedQuery = (
+  sourceIds: string[],
+  preferredText: string,
+  fallbackText: string,
+  excludedSourceIds: string[] = [],
+): string => {
+  const sourcePrefix = sourceIds.join(" ").trim();
+  const topic = stripReferencedSourceTokens(
+    stripDocumentReferences(preferredText || fallbackText),
+    excludedSourceIds,
+  );
+  if (sourcePrefix && topic) {
+    return `${sourcePrefix} ${topic}`.trim();
+  }
+  return sourcePrefix || topic || fallbackText.trim();
 };
 
 const normalizeRequestedItemDescriptor = (descriptor: RequestedItemDescriptor): RequestedItemDescriptor => {
@@ -340,10 +431,10 @@ const normalizeRequestedItemDescriptor = (descriptor: RequestedItemDescriptor): 
       queryPrimarySourceIds.length > 1 &&
       querySupportingSourceIds.length > 0);
 
-  const supportingSourceIds = dedupeNormalizedStrings(
+  let supportingSourceIds = dedupeNormalizedStrings(
     (shouldInferSupportingFromQuery ? querySupportingSourceIds : declaredSupportingSourceIds).filter(Boolean),
   );
-  const primarySourceIds = dedupeNormalizedStrings(
+  let primarySourceIds = dedupeNormalizedStrings(
     (
       declaredPrimarySourceIds.length > 0
         ? declaredPrimarySourceIds
@@ -351,10 +442,37 @@ const normalizeRequestedItemDescriptor = (descriptor: RequestedItemDescriptor): 
     ).filter((documentId) => !supportingSourceIds.includes(documentId)),
   );
 
+  if (primarySourceIds.length === 0 && supportingSourceIds.length > 1) {
+    const orderedPrimaryCandidates = resolveDocumentIds([], primaryFallbackText).filter((documentId) =>
+      supportingSourceIds.includes(documentId),
+    );
+    const primarySourceId = orderedPrimaryCandidates[0];
+    if (primarySourceId) {
+      primarySourceIds = [primarySourceId];
+      supportingSourceIds = supportingSourceIds.filter((documentId) => documentId !== primarySourceId);
+    }
+  }
+
+  const retrievalQuery = buildSourceScopedQuery(
+    primarySourceIds,
+    descriptor.retrieval_query,
+    descriptor.item,
+    supportingSourceIds,
+  );
+  const supportingRetrievalQuery =
+    supportingSourceIds.length > 0
+      ? buildSourceScopedQuery(
+          supportingSourceIds,
+          descriptor.supporting_retrieval_query,
+          descriptor.item,
+          primarySourceIds,
+        )
+      : "";
+
   return {
     item: descriptor.item,
-    retrieval_query: descriptor.retrieval_query || descriptor.item,
-    supporting_retrieval_query: descriptor.supporting_retrieval_query || descriptor.item,
+    retrieval_query: retrievalQuery,
+    supporting_retrieval_query: supportingRetrievalQuery,
     primary_source_ids: primarySourceIds,
     supporting_source_ids: supportingSourceIds,
   };
@@ -384,73 +502,100 @@ const buildItemScopedContexts = (
     };
   });
 
-const retrieveItemScopedContextBundles = async (
-  lexical: Awaited<ReturnType<typeof getIndexStore>>["lexical"],
-  vector: Awaited<ReturnType<typeof getIndexStore>>["vector"],
-  requestedItems: RequestedItemDescriptor[],
-): Promise<ItemContextBundle[]> =>
-  Promise.all(
-    requestedItems.map(async (descriptor) => {
-      const initialPrimaryChunks = descriptor.primary_source_ids.length > 0
-        ? await Promise.all(
-            descriptor.primary_source_ids.map(async (documentId) => {
-              const retrieval = await retrieveCrossDocument(lexical, vector, {
-                query: descriptor.retrieval_query,
-                additionalQueries: [],
-                topK: appConfig.retrieval.topK,
-                filterDocumentIds: [documentId],
-              });
-              return retrieval.chunks;
-            }),
-          ).then((bundles) => mergeBundleChunks(bundles))
-        : [];
+const ITEM_CONTEXT_PRIMARY_LIMIT = appConfig.retrieval.topK;
+const ITEM_CONTEXT_SUPPORTING_LIMIT = appConfig.retrieval.topK * 2;
 
-      const supportingBridgeQueries =
-        initialPrimaryChunks.length > 0
-          ? [initialPrimaryChunks[0].chunk.text]
+const extractBridgeTermsFromPrimaryContext = async (
+  item: string,
+  primaryChunks: ScoredChunk[],
+): Promise<string[]> => {
+  if (primaryChunks.length === 0) {
+    return [];
+  }
+
+  const chat = getChatModel();
+  const primaryContext = buildEvidenceContext(primaryChunks.slice(0, ITEM_CONTEXT_PRIMARY_LIMIT));
+  const response = await chat.invoke([
+    new SystemMessage(`
+Return JSON only:
+{"terms":["..."]}
+
+Extract short generic control, safeguard, record-handling, or compliance-category phrases from the governing-source context that should be used to retrieve matching behavior descriptions from another source.
+
+Rules:
+- Use only category phrases visible in or directly implied by the governing-source context.
+- Prefer short phrases such as access control, audit trails, authority checks, record integrity, validation, electronic records, electronic signatures, confidentiality, or record linking when those categories are present.
+- Do not return source names, law names, section numbers, product names, page numbers, or implementation-specific nouns.
+- Do not explain. Return only the JSON object.
+`),
+    new HumanMessage(`Requested item:\n${item}\n\nGoverning-source context:\n${primaryContext}`),
+  ]);
+
+  return parseRetrievalTermPlan(parseChatResponse(response.content))?.terms ?? [];
+};
+
+const hydrateItemContextBundles = async (
+  question: string,
+  requestedItems: RequestedItemDescriptor[],
+  chunks: ScoredChunk[],
+): Promise<ItemContextBundle[]> => {
+  const globalContexts = buildItemScopedContexts(requestedItems, chunks);
+  const { lexical, vector } = await getIndexStore({ allowDenseMissing: true });
+  const questionScopedChunks = await retrieveCrossDocument(lexical, vector, {
+    query: question,
+    additionalQueries: [],
+    topK: appConfig.retrieval.topK,
+  }).then((retrieval) => retrieval.chunks);
+
+  return Promise.all(
+    globalContexts.map(async (scopedContext) => {
+      const { descriptor } = scopedContext;
+      const primaryChunks =
+        descriptor.primary_source_ids.length > 0
+          ? await Promise.all(
+              descriptor.primary_source_ids.map(async (documentId) => {
+                const retrieval = await retrieveCrossDocument(lexical, vector, {
+                  query: descriptor.retrieval_query,
+                  additionalQueries: [],
+                  topK: ITEM_CONTEXT_PRIMARY_LIMIT,
+                  filterDocumentIds: [documentId],
+                });
+                return retrieval.chunks;
+              }),
+            ).then((bundles) => mergeBundleChunks(bundles).slice(0, ITEM_CONTEXT_PRIMARY_LIMIT))
+          : scopedContext.primaryChunks.slice(0, ITEM_CONTEXT_PRIMARY_LIMIT);
+
+      const bridgeTerms =
+        descriptor.supporting_source_ids.length > 0
+          ? await extractBridgeTermsFromPrimaryContext(descriptor.item, primaryChunks)
           : [];
 
-      const initialSupportingChunks = descriptor.supporting_source_ids.length > 0
-        ? await Promise.all(
-            descriptor.supporting_source_ids.map(async (documentId) => {
-              const retrieval = await retrieveCrossDocument(lexical, vector, {
-                query: descriptor.supporting_retrieval_query,
-                additionalQueries: supportingBridgeQueries,
-                topK: appConfig.retrieval.topK,
-                filterDocumentIds: [documentId],
-              });
-              return retrieval.chunks;
-            }),
-          ).then((bundles) => mergeBundleChunks(bundles))
-        : [];
-
-      const primaryChunks = descriptor.primary_source_ids.length > 0
-        ? await Promise.all(
-            descriptor.primary_source_ids.map(async (documentId) => {
-              const retrieval = await retrieveCrossDocument(lexical, vector, {
-                query: descriptor.retrieval_query,
-                additionalQueries: [],
-                topK: appConfig.retrieval.topK,
-                filterDocumentIds: [documentId],
-              });
-              return retrieval.chunks;
-            }),
-          ).then((bundles) => mergeBundleChunks(bundles))
-        : initialPrimaryChunks;
-
-      const supportingChunks = descriptor.supporting_source_ids.length > 0
-        ? await Promise.all(
-            descriptor.supporting_source_ids.map(async (documentId) => {
-              const retrieval = await retrieveCrossDocument(lexical, vector, {
-                query: descriptor.supporting_retrieval_query,
-                additionalQueries: supportingBridgeQueries,
-                topK: appConfig.retrieval.topK,
-                filterDocumentIds: [documentId],
-              });
-              return retrieval.chunks;
-            }),
-          ).then((bundles) => mergeBundleChunks(bundles))
-        : initialSupportingChunks;
+      const supportingChunks =
+        descriptor.supporting_source_ids.length > 0
+          ? await Promise.all(
+              descriptor.supporting_source_ids.map(async (documentId) => {
+                const retrieval = await retrieveCrossDocument(lexical, vector, {
+                  query: buildSourceScopedQuery(
+                    [documentId],
+                    bridgeTerms.join(" "),
+                    question,
+                    descriptor.primary_source_ids,
+                  ),
+                  additionalQueries: [],
+                  topK: appConfig.retrieval.topK,
+                  filterDocumentIds: [documentId],
+                });
+                return retrieval.chunks;
+              }),
+            ).then((bundles) =>
+              mergeBundleChunks([
+                ...bundles,
+                questionScopedChunks.filter((chunk) =>
+                  descriptor.supporting_source_ids.includes(chunk.chunk.metadata.document_id),
+                ),
+              ]).slice(0, ITEM_CONTEXT_SUPPORTING_LIMIT),
+            )
+          : scopedContext.supportingChunks.slice(0, ITEM_CONTEXT_SUPPORTING_LIMIT);
 
       return {
         item: descriptor.item,
@@ -461,6 +606,7 @@ const retrieveItemScopedContextBundles = async (
       };
     }),
   );
+};
 
 const parseItemAnswerPlan = (raw: string): ItemAnswerPlan[] => {
   const trimmed = raw.trim();
@@ -498,6 +644,28 @@ const parseItemAnswerPlan = (raw: string): ItemAnswerPlan[] => {
           typeof (value as { reasoning?: unknown }).reasoning === "string"
             ? String((value as { reasoning?: unknown }).reasoning).trim()
             : "";
+        const primary_controls =
+          Array.isArray((value as { primary_controls?: unknown }).primary_controls)
+            ? ((value as { primary_controls?: unknown[] }).primary_controls ?? [])
+                .filter((entry): entry is string => typeof entry === "string")
+                .map((entry) => entry.trim())
+                .filter((entry) => entry.length > 0)
+            : [];
+        const supporting_safeguards =
+          Array.isArray((value as { supporting_safeguards?: unknown }).supporting_safeguards)
+            ? ((value as { supporting_safeguards?: unknown[] }).supporting_safeguards ?? [])
+                .filter((entry): entry is string => typeof entry === "string")
+                .map((entry) => entry.trim())
+                .filter((entry) => entry.length > 0)
+            : [];
+        const matched_pairs =
+          Array.isArray((value as { matched_pairs?: unknown }).matched_pairs)
+            ? ((value as { matched_pairs?: unknown[] }).matched_pairs ?? [])
+                .filter((entry): entry is string => typeof entry === "string")
+                .map((entry) => entry.trim())
+                .filter((entry) => entry.length > 0)
+            : [];
+        const normalizedSupported = Boolean(value.supported) || matched_pairs.length > 0;
         if (!value.supported) {
           if (
             answer.length > 0 &&
@@ -505,26 +673,39 @@ const parseItemAnswerPlan = (raw: string): ItemAnswerPlan[] => {
           ) {
             return {
               item,
-              supported: false,
+              supported: normalizedSupported,
               answer,
               support_text,
               reasoning,
+              primary_controls,
+              supporting_safeguards,
+              matched_pairs,
             };
           }
           return {
             item,
-            supported: false,
-            answer: `The requested information about ${item} is not supported by the retrieved evidence.`,
+            supported: normalizedSupported,
+            answer: normalizedSupported
+              ? answer.length > 0
+                ? answer
+                : support_text
+              : `The requested information about ${item} is not supported by the retrieved evidence.`,
             support_text,
             reasoning,
+            primary_controls,
+            supporting_safeguards,
+            matched_pairs,
           };
         }
         return {
           item,
-          supported: true,
+          supported: normalizedSupported,
           answer,
           support_text,
           reasoning,
+          primary_controls,
+          supporting_safeguards,
+          matched_pairs,
         };
       })
       .filter((value) => value.item.length > 0 && value.answer.length > 0);
@@ -549,6 +730,7 @@ Rules:
 - Each item must be an answerable factual sub-request, not a keyword list or a procedural instruction.
 - Keep exact identifiers, numbers, filenames, and quoted strings when relevant.
 - If the question names a source by exact document id or file name, preserve that exact source string in the corresponding item and retrieval_query. Do not replace it with an abbreviation or paraphrase.
+- If an item is source-specific, keep the exact corpus document id verbatim in the item label, retrieval_query, and supporting_retrieval_query where that source is referenced. Do not replace an exact document id with a generic label such as "paper", "CFR", or "document".
 - Keep each item concise and specific.
 - For multi-part questions, split into one item per requested fact.
 - Keep only the subject needed for that item instead of carrying every named document into every item.
@@ -559,6 +741,7 @@ Rules:
 - For items asking whether a governing source supports matching controls, requirements, or sections for a target system or method, prefer an answerable noun phrase such as "Matching CFR controls for ..." or "Matching policy requirements for ..." instead of a yes/no item phrased with "whether".
 - For items asking whether a governing source supports controls, requirements, or sections for another source, prefer a category-level item about matching control categories, safeguard categories, or requirement categories rather than a broad whole-system compliance judgment.
 - When a supporting source explicitly describes safeguards, record-handling properties, access restrictions, auditability, validation needs, confidentiality, integrity, or erasure requirements, express the item around those matching categories instead of around the entire target system as a whole.
+- For that kind of cross-source item, do not phrase the item around low-level implementation mechanisms when the supporting source also provides higher-level safeguard or compliance categories. Prefer the higher-level categories.
 - Do not create a separate item that only restates what to say when evidence is insufficient. Keep unsupported handling inside the same factual item.
 - retrieval_query must be a short evidence-seeking query for the primary source of that item.
 - supporting_retrieval_query must be a short evidence-seeking query for the supporting source context of that same item.
@@ -575,6 +758,7 @@ Rules:
 - supporting_source_ids may list exact corpus document ids that provide target-system or comparison context for the item, but are not the main governing or reporting source.
 - For a metric reported in a named document, that reporting document belongs in primary_source_ids.
 - For an item asking whether a governing source supports matching controls or requirements for another named system or method, the governing source belongs in primary_source_ids and the target system source belongs in supporting_source_ids.
+- For any cross-source item, primary_source_ids must contain exactly one governing or reporting source id and must never be empty. supporting_source_ids must not repeat the primary source id.
 - Do not invent extra items.
 `),
       new HumanMessage(`Question:\n${question}`),
@@ -626,27 +810,30 @@ const formatFinalItemAnswer = (
     const answer = item.answer.trim();
     const supportText = (item.support_text ?? "").trim();
     const reasoning = (item.reasoning ?? "").trim();
-    const isCrossSource =
-      Boolean(descriptor) &&
-      descriptor!.primary_source_ids.length > 0 &&
-      descriptor!.supporting_source_ids.length > 0;
-
-    if (!isCrossSource) {
-      return answer;
-    }
-
-    const parts = [answer];
-    if (supportText && !answer.toLowerCase().includes(supportText.toLowerCase())) {
-      parts.push(`Matching controls: ${supportText}.`);
-    }
-    if (
-      reasoning &&
-      !parts.some((part) => part.toLowerCase().includes(reasoning.toLowerCase()))
-    ) {
-      parts.push(reasoning);
-    }
-
-    return parts.join(" ").trim();
+    const matchedPairs = item.matched_pairs ?? [];
+    const primaryControls = item.primary_controls ?? [];
+    const looksBareScalar =
+      answer.length > 0 &&
+      answer.length <= 32 &&
+      !/[.!?]/u.test(answer) &&
+      !/\s{2,}/u.test(answer) &&
+      !/[a-z]{3,}/iu.test(answer);
+    const looksLikeUnsupportedTemplate = /not supported by the retrieved evidence/i.test(answer);
+    const structuredSupportSummary =
+      supportText ||
+      (matchedPairs.length > 0 ? matchedPairs.join("; ") : "") ||
+      (primaryControls.length > 0 ? primaryControls.join("; ") : "");
+    const normalizedSupportedAnswer =
+      looksLikeUnsupportedTemplate && structuredSupportSummary
+        ? /[.!?]$/u.test(structuredSupportSummary)
+          ? structuredSupportSummary
+          : `${structuredSupportSummary}.`
+        : looksBareScalar && supportText
+        ? /[.!?]$/u.test(supportText)
+          ? supportText
+          : `${supportText}.`
+        : answer;
+    return normalizedSupportedAnswer;
   }
 
   const reasoning = (item.reasoning ?? "").trim();
@@ -690,11 +877,11 @@ const formatItemScopedContexts = (scopedContexts: ItemScopedContext[]): string =
     .map(({ descriptor, primaryChunks, supportingChunks }) => {
       const primaryContext =
         primaryChunks.length > 0
-          ? buildEvidenceContext(primaryChunks.slice(0, Math.min(6, primaryChunks.length)))
+          ? buildEvidenceContext(primaryChunks.slice(0, Math.min(ITEM_CONTEXT_PRIMARY_LIMIT, primaryChunks.length)))
           : "(none)";
       const supportingContext =
         supportingChunks.length > 0
-          ? buildEvidenceContext(supportingChunks.slice(0, Math.min(3, supportingChunks.length)))
+          ? buildEvidenceContext(supportingChunks.slice(0, Math.min(ITEM_CONTEXT_SUPPORTING_LIMIT, supportingChunks.length)))
           : "(none)";
 
       return [
@@ -866,6 +1053,11 @@ Rules:
 - Treat the item as supported when the primary-source text explicitly lists controls or requirements that match the target system's described behaviors or safeguards, even if the primary source does not name the target system verbatim.
 - Do not reject the item only because the governing source and the target system come from different domains.
 - Match by control or safeguard category, not by implementation-specific nouns. A primary-source control can support a supporting-source behavior when both concern the same category such as access restriction, record integrity, record authenticity, auditability, validation, confidentiality, or record attribution, even if the implementation details differ.
+- If the supporting context explicitly names safeguard categories, compliance categories, or record-handling categories, use those explicit categories as the matching target instead of lower-level implementation details.
+- If the supporting context explicitly states that a safeguard, record type, or operational boundary maps onto compliance requirements, and the primary context lists controls in the same category, treat that as direct support.
+- If one primary-context chunk explicitly lists control or requirement categories that match the supporting safeguards, treat the item as supported even when other retrieved primary-context chunks from the same source are unrelated.
+- If the supporting context mentions a different law, policy family, or regulatory source than the primary governing source, do not require the primary source to reproduce that other law or source. Use only the safeguard, control, audit, access, integrity, confidentiality, record, or erasure categories described around that mention as the matching target.
+- Do not treat the name of another law, regulation, or policy family as a safeguard category by itself. If the supporting context mentions another law or regulation, extract the concrete safeguard or control category described around that mention instead of the law name.
 - If the current candidate answer is unsupported but the context shows matching controls or requirements, rewrite it as supported.
 - If the current candidate answer is supported but the context does not show matching controls or requirements, rewrite it as unsupported.
 - Before deciding supported, list the explicit governing-source control phrases in primary_controls and the explicit target-system safeguard or compliance phrases in supporting_safeguards.
@@ -912,7 +1104,8 @@ const verifyRequestedItemsWithModel = async (
     return null;
   }
 
-  const context = formatItemScopedContexts(itemContextsFromBundles(requestedItems, itemContextBundles, chunks));
+  const scopedContexts = itemContextsFromBundles(requestedItems, itemContextBundles, chunks);
+  const context = formatItemScopedContexts(scopedContexts);
 
   const chat = getChatModel();
   const itemResponseSummary = itemResponses
@@ -942,6 +1135,11 @@ For supported items, require that the item's answer matches its support_text and
 If a value is explicitly present in the retrieved context, treat it as supported only when it matches the requested subject and qualifier. Preserve stated qualifiers and conditions.
 For items asking whether a governing source supports matching controls or requirements for a target system or method, treat the item as supported when the governing-source text explicitly lists controls or requirements that match the target system's described behaviors or safeguards, even if the governing source does not name the target system verbatim.
 Do not reject that kind of item only because the governing source and target system are from different domains. Reject it only when the retrieved governing-source text lacks matching controls or requirements for the behaviors described in the supporting context.
+If the supporting context explicitly names safeguard categories, compliance categories, or record-handling categories, use those explicit categories as the matching target instead of lower-level implementation details.
+If the supporting context explicitly states that a safeguard, record type, or operational boundary maps onto compliance requirements, and the governing-source text lists controls in the same category, treat that as direct support.
+If one or more governing-source chunks explicitly list matching control or requirement categories, treat the item as supported even when other retrieved chunks from the same governing source are unrelated.
+If the supporting context mentions a different law, policy family, or regulatory source than the governing source, do not require the governing source to reproduce that other law or source. Use only the safeguard, control, audit, access, integrity, confidentiality, record, or erasure categories described around that mention as the matching target.
+Do not treat the name of another law, regulation, or policy family as a safeguard category by itself. If the supporting context mentions another law or regulation, extract the concrete safeguard or control category described around that mention instead of the law name.
 For that kind of supported item, the answer must summarize the matching control or requirement categories from the governing source in plain language and must not invent clause letters, subsection ids, or citations that are not explicitly shown in the retrieved primary context.
 For that kind of item, populate primary_controls with explicit governing-source control phrases, supporting_safeguards with explicit target-system safeguard or compliance phrases, and matched_pairs with the actual category-level matches between them. If matched_pairs is non-empty, treat the item as supported. If matched_pairs is empty, treat the item as unsupported.
 `),
@@ -962,22 +1160,72 @@ For that kind of item, populate primary_controls with explicit governing-source 
   );
 };
 
+const resolveCrossSourceItemWithModel = async (
+  question: string,
+  descriptor: RequestedItemDescriptor,
+  bundle: ItemContextBundle,
+  current: ItemAnswerPlan | null,
+): Promise<ItemAnswerPlan | null> => {
+  if (descriptor.supporting_source_ids.length === 0) {
+    return null;
+  }
+
+  const chat = getChatModel();
+  const scopedContext = formatItemScopedContexts([
+    {
+      descriptor,
+      primaryChunks: bundle.primary_chunks,
+      supportingChunks: bundle.supporting_chunks,
+    },
+  ]);
+
+  const response = await chat.invoke([
+    new SystemMessage(`
+Return JSON only:
+{"items":[{"item":"...","supported":true|false,"answer":"...","support_text":"...","reasoning":"...","primary_controls":["..."],"supporting_safeguards":["..."],"matched_pairs":["..."]}]}
+
+Resolve one cross-source item from a primary governing source and a supporting source.
+
+Rules:
+- Extract explicit control or requirement phrases from the primary context into primary_controls.
+- Extract explicit safeguard, record-handling, compliance-category, or operational-boundary phrases from the supporting context into supporting_safeguards.
+- Populate matched_pairs only when a primary control phrase and a supporting safeguard phrase share the same control category.
+- Match by control category, not by domain. Examples of valid category matches when they are explicitly present: authority or access checks, audit trails, independent/addressable records, record integrity, validation, confidentiality, record linking, or attribution.
+- If matched_pairs is non-empty, set supported=true and answer by summarizing the matching primary controls in plain language.
+- If matched_pairs is empty, set supported=false and answer with the unsupported template.
+- Do not invent clause ids, subsection letters, or controls not visible in the primary context.
+- Do not use law names by themselves as supporting safeguards.
+`),
+    new HumanMessage(
+      `Question:\n${question}\n\nRequested item:\n${descriptor.item}\n\nCurrent resolution:\n${JSON.stringify(current ?? { item: descriptor.item, supported: false, answer: "" })}\n\nItem-scoped context:\n${scopedContext}`,
+    ),
+  ]);
+
+  const parsed = parseItemAnswerPlan(parseChatResponse(response.content));
+  return parsed.find((entry) => entry.item === descriptor.item) ?? null;
+};
+
 export const retrieveNode = async (state: GraphState): Promise<GraphState> => {
-  const { requestedItems, retrievalQueries } = await planRequestedItems(state.question);
   const { lexical, vector } = await getIndexStore({ allowDenseMissing: true });
   const explicitSourceIds = extractReferencedDocumentIds(state.question);
+  const retrievalQueries =
+    explicitSourceIds.length > 0
+      ? explicitSourceIds.map((documentId) =>
+          buildSourceScopedQuery(
+            [documentId],
+            state.question,
+            state.question,
+            explicitSourceIds.filter((value) => value !== documentId),
+          ),
+        )
+      : [state.question];
   const retrieval =
     explicitSourceIds.length > 0
       ? await Promise.all(
-          explicitSourceIds.map(async (documentId) =>
+          explicitSourceIds.map(async (documentId, index) =>
             retrieveCrossDocument(lexical, vector, {
-              query:
-                retrievalQueries.find((query) => extractReferencedDocumentIds(query).includes(documentId)) ??
-                state.question,
-              additionalQueries: retrievalQueries.filter((query) => {
-                const referencedDocumentIds = extractReferencedDocumentIds(query);
-                return referencedDocumentIds.length === 0 || referencedDocumentIds.includes(documentId);
-              }),
+              query: retrievalQueries[index] ?? state.question,
+              additionalQueries: [],
               topK: appConfig.retrieval.topK,
               filterDocumentIds: [documentId],
             }),
@@ -994,12 +1242,11 @@ export const retrieveNode = async (state: GraphState): Promise<GraphState> => {
         }))
       : await retrieveCrossDocument(lexical, vector, {
           query: state.question,
-          additionalQueries: retrievalQueries,
+          additionalQueries: [],
           topK: appConfig.retrieval.topK,
         });
 
   const chunks = retrieval.chunks;
-  const itemContexts = await retrieveItemScopedContextBundles(lexical, vector, requestedItems);
   const summary = summarizeCitations(chunks);
   const documentCoverage = getDocumentCoverageSummary(chunks);
   const multiDoc = hasMultiDocumentCoverage(chunks);
@@ -1012,8 +1259,6 @@ export const retrieveNode = async (state: GraphState): Promise<GraphState> => {
 
   return {
     ...state,
-    requested_items: requestedItems,
-    item_contexts: itemContexts,
     retrieval,
     trace: appendTrace(
       state.trace,
@@ -1029,21 +1274,8 @@ export const retrieveNode = async (state: GraphState): Promise<GraphState> => {
         degradationReasons: retrieval.degradation_reasons ?? [],
         denseEnabled: retrieval.dense_enabled,
         lexicalEnabled: retrieval.lexical_enabled,
-        requestedItems: getRequestedItemLabels(requestedItems),
-        requestedItemDescriptors: requestedItems,
         retrievalQueries,
         explicitSourceIds,
-        itemContextCoverage: itemContexts.map((context) => ({
-          item: context.item,
-          primaryDocuments: Array.from(
-            new Set(context.primary_chunks.map((chunk) => chunk.chunk.metadata.document_id)),
-          ),
-          supportingDocuments: Array.from(
-            new Set(context.supporting_chunks.map((chunk) => chunk.chunk.metadata.document_id)),
-          ),
-          primaryTopPages: context.primary_chunks.slice(0, 3).map((chunk) => chunk.chunk.metadata.page),
-          supportingTopPages: context.supporting_chunks.slice(0, 3).map((chunk) => chunk.chunk.metadata.page),
-        })),
       },
     ),
   };
@@ -1099,6 +1331,10 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
     state.requested_items && state.requested_items.length > 0
       ? state.requested_items
       : (await planRequestedItems(state.question)).requestedItems;
+  const itemContexts =
+    state.item_contexts && state.item_contexts.length > 0
+      ? state.item_contexts
+      : await hydrateItemContextBundles(state.question, requestedItems, chunks);
 
   if (chunks.length === 0) {
     return {
@@ -1114,30 +1350,14 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
     state.question,
     requestedItems,
     chunks,
-    state.item_contexts,
+    itemContexts,
   );
-  const crossSourceRequestedItems = requestedItems.filter(
-    (descriptor) =>
-      descriptor.primary_source_ids.length > 0 && descriptor.supporting_source_ids.length > 0,
-  );
-  const crossSourceResponses =
-    crossSourceRequestedItems.length > 0
-      ? await generateCrossSourceMatchesWithModel(
-          state.question,
-          crossSourceRequestedItems,
-          itemResponses,
-          chunks,
-          state.item_contexts,
-        )
-      : [];
-  const crossSourceByItem = new Map(crossSourceResponses.map((entry) => [entry.item, entry]));
-  const mergedItemResponses = itemResponses.map((entry) => crossSourceByItem.get(entry.item) ?? entry);
   const finalChunks = chunks;
   const analysis = analyseCrossDocEvidence(finalChunks);
-  const supportedCount = mergedItemResponses.filter((item) => item.supported).length;
+  const supportedCount = itemResponses.filter((item) => item.supported).length;
   const answer =
-    mergedItemResponses.length > 0
-      ? formatRequestedItemResponses(mergedItemResponses, requestedItems)
+    itemResponses.length > 0
+      ? formatRequestedItemResponses(itemResponses, requestedItems)
       : EVIDENCE_WARNING;
 
   return {
@@ -1149,7 +1369,8 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
         }
       : state.retrieval,
     requested_items: requestedItems,
-    item_responses: mergedItemResponses,
+    item_contexts: itemContexts,
+    item_responses: itemResponses,
     answer,
     citations: [],
     trace: appendTrace(
@@ -1163,8 +1384,15 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
       {
         evidencePassed,
         requestedItems: getRequestedItemLabels(requestedItems),
+        itemContextCoverage: itemContexts.map((context) => ({
+          item: context.item,
+          primaryDocuments: Array.from(new Set(context.primary_chunks.map((chunk) => chunk.chunk.metadata.document_id))),
+          supportingDocuments: Array.from(new Set(context.supporting_chunks.map((chunk) => chunk.chunk.metadata.document_id))),
+          primaryTopPages: context.primary_chunks.slice(0, 6).map((chunk) => chunk.chunk.metadata.page),
+          supportingTopPages: context.supporting_chunks.slice(0, 6).map((chunk) => chunk.chunk.metadata.page),
+        })),
         supportedItemCount: supportedCount,
-        itemResponses: mergedItemResponses,
+        itemResponses,
         draftAnswer: answer,
         sourceCount: finalChunks.length,
         isMultiDocument: analysis.isMultiDocument,
@@ -1184,6 +1412,10 @@ export const verifyNode = async (state: GraphState): Promise<GraphState> => {
     state.requested_items && state.requested_items.length > 0
       ? state.requested_items
       : (await planRequestedItems(state.question)).requestedItems;
+  const itemContexts =
+    state.item_contexts && state.item_contexts.length > 0
+      ? state.item_contexts
+      : await hydrateItemContextBundles(state.question, requestedItems, state.retrieval?.chunks ?? []);
 
   if (!hasEvidence) {
     return {
@@ -1220,7 +1452,7 @@ export const verifyNode = async (state: GraphState): Promise<GraphState> => {
     itemResponses,
     answer,
     state.retrieval?.chunks ?? [],
-    state.item_contexts,
+    itemContexts,
   );
 
   const correctedItemResponses =
@@ -1240,21 +1472,41 @@ export const verifyNode = async (state: GraphState): Promise<GraphState> => {
           );
         })
       : itemResponses;
+  const crossSourceOverrides = await Promise.all(
+    requestedItems.map(async (descriptor) => {
+      if (descriptor.supporting_source_ids.length === 0) {
+        return null;
+      }
+      const bundle = itemContexts.find((context) => context.item === descriptor.item);
+      if (!bundle) {
+        return null;
+      }
+      const current = correctedItemResponses.find((entry) => entry.item === descriptor.item) ?? null;
+      return resolveCrossSourceItemWithModel(state.question, descriptor, bundle, current);
+    }),
+  );
+  const crossSourceOverrideMap = new Map(
+    crossSourceOverrides
+      .filter((value): value is ItemAnswerPlan => Boolean(value))
+      .map((entry) => [entry.item, entry]),
+  );
+  const finalItemResponses = correctedItemResponses.map((entry) => crossSourceOverrideMap.get(entry.item) ?? entry);
   const hasGroundedItemResolution =
-    correctedItemResponses.length === requestedItems.length &&
-    correctedItemResponses.every(
+    finalItemResponses.length === requestedItems.length &&
+    finalItemResponses.every(
       (entry) => entry.item.trim().length > 0 && entry.answer.trim().length > 0,
     );
   const correctedAnswer =
-    correctedItemResponses.length > 0
-      ? formatRequestedItemResponses(correctedItemResponses, requestedItems)
+    finalItemResponses.length > 0
+      ? formatRequestedItemResponses(finalItemResponses, requestedItems)
       : answer;
 
   if (itemVerdict && !itemVerdict.supported && !hasGroundedItemResolution) {
     return {
       ...state,
       requested_items: requestedItems,
-      item_responses: correctedItemResponses,
+      item_contexts: itemContexts,
+      item_responses: finalItemResponses,
       answer: EVIDENCE_WARNING,
       citations: [],
       trace: appendTrace(
@@ -1265,7 +1517,7 @@ export const verifyNode = async (state: GraphState): Promise<GraphState> => {
         0.2,
         {
           verifierReason: itemVerdict.reason,
-          correctedItemResponses,
+          correctedItemResponses: finalItemResponses,
           verifierRawResponse: itemVerdict.raw_response ?? "",
         },
       ),
@@ -1275,7 +1527,8 @@ export const verifyNode = async (state: GraphState): Promise<GraphState> => {
   return {
     ...state,
     requested_items: requestedItems,
-    item_responses: correctedItemResponses,
+    item_contexts: itemContexts,
+    item_responses: finalItemResponses,
     answer: correctedAnswer,
     citations: [],
     trace: appendTrace(
@@ -1289,7 +1542,7 @@ export const verifyNode = async (state: GraphState): Promise<GraphState> => {
       itemVerdict
         ? {
             verifierReason: itemVerdict.reason,
-            correctedItemResponses,
+            correctedItemResponses: finalItemResponses,
             correctedAnswer,
             verifierRawResponse: itemVerdict.raw_response ?? "",
             hasGroundedItemResolution,
