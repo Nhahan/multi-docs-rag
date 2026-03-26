@@ -1025,81 +1025,6 @@ Rules:
   }));
 };
 
-const generateCrossSourceMatchesWithModel = async (
-  question: string,
-  requestedItems: RequestedItemDescriptor[],
-  baseItemResponses: ItemAnswerPlan[],
-  chunks: ScoredChunk[],
-  itemContextBundles?: ItemContextBundle[],
-): Promise<ItemAnswerPlan[]> => {
-  if (requestedItems.length === 0 || chunks.length === 0) {
-    return [];
-  }
-
-  const chat = getChatModel();
-  const scopedContexts = itemContextsFromBundles(requestedItems, itemContextBundles, chunks);
-
-  return Promise.all(
-    scopedContexts.map(async (scopedContext) => {
-      const currentResponse =
-        baseItemResponses.find((entry) => entry.item === scopedContext.descriptor.item) ?? null;
-      const response = await chat.invoke([
-        new SystemMessage(`
-You are revising a candidate answer for an item that compares a primary governing source against a supporting source that describes a target system or method.
-
-Return JSON only in this shape:
-{"items":[{"item":"...","supported":true|false,"answer":"...","support_text":"...","reasoning":"..."}]}
-
-Rules:
-- Preserve each requested item exactly.
-- First judge whether the current candidate answer is correct given the item-scoped retrieved context.
-- Keep every field brief. Prefer short phrases over full quotations.
-- support_text must be a single short phrase or sentence fragment of at most 25 words.
-- reasoning must be a single short sentence of at most 20 words.
-- primary_controls, supporting_safeguards, and matched_pairs must contain at most 4 entries each, and each entry must stay under 12 words.
-- Compare the primary-source controls, requirements, sections, or safeguards against the supporting-source behaviors, safeguards, records, access patterns, or data-handling needs.
-- Treat the item as supported when the primary-source text explicitly lists controls or requirements that match the target system's described behaviors or safeguards, even if the primary source does not name the target system verbatim.
-- Do not reject the item only because the governing source and the target system come from different domains.
-- Match by control or safeguard category, not by implementation-specific nouns. A primary-source control can support a supporting-source behavior when both concern the same category such as access restriction, record integrity, record authenticity, auditability, validation, confidentiality, or record attribution, even if the implementation details differ.
-- If the supporting context explicitly names safeguard categories, compliance categories, or record-handling categories, use those explicit categories as the matching target instead of lower-level implementation details.
-- If the supporting context explicitly states that a safeguard, record type, or operational boundary maps onto compliance requirements, and the primary context lists controls in the same category, treat that as direct support.
-- If one primary-context chunk explicitly lists control or requirement categories that match the supporting safeguards, treat the item as supported even when other retrieved primary-context chunks from the same source are unrelated.
-- If the supporting context mentions a different law, policy family, or regulatory source than the primary governing source, do not require the primary source to reproduce that other law or source. Use only the safeguard, control, audit, access, integrity, confidentiality, record, or erasure categories described around that mention as the matching target.
-- Do not treat the name of another law, regulation, or policy family as a safeguard category by itself. If the supporting context mentions another law or regulation, extract the concrete safeguard or control category described around that mention instead of the law name.
-- If the current candidate answer is unsupported but the context shows matching controls or requirements, rewrite it as supported.
-- If the current candidate answer is supported but the context does not show matching controls or requirements, rewrite it as unsupported.
-- Before deciding supported, list the explicit governing-source control phrases in primary_controls and the explicit target-system safeguard or compliance phrases in supporting_safeguards.
-- Then list only the actual category-level matches between those two lists in matched_pairs.
-- If matched_pairs is non-empty, treat the item as supported. If matched_pairs is empty, treat the item as unsupported.
-- If supported, answer by summarizing the matching control or requirement categories from the primary source.
-- support_text must name the specific matching control phrases, requirement categories, or safeguard text from the primary source.
-- Name only controls, requirement categories, or legal identifiers that are explicitly visible in the primary context. Do not invent subsection letters, clause numbers, or citations that are not directly shown.
-- Keep support_text close to the primary-source wording. Prefer short copied or lightly paraphrased control phrases over reconstructed legal references.
-- reasoning must explain in one short sentence which supporting-source behaviors or safeguards those primary-source controls match.
-- Mark supported=false only when the primary context does not provide matching controls or requirements for the behaviors described in the supporting context.
-- If unsupported, answer must include the phrase "not supported by the retrieved evidence", support_text must say what the primary source contains, and reasoning must explain what matching behavior or safeguard is still missing.
-- Do not invent controls, sections, or behaviors that are not in the retrieved context.
-- Do not include citations, provenance, or page references.
-`),
-        new HumanMessage(
-          `Question:\n${question}\n\nRequested item:\n- ${scopedContext.descriptor.item}\n\nCurrent candidate answer:\n${JSON.stringify(currentResponse ?? { item: scopedContext.descriptor.item, supported: false, answer: "" })}\n\nItem-scoped retrieved context:\n${formatItemScopedContexts([scopedContext])}`,
-        ),
-      ]);
-
-      const parsed = parseItemAnswerPlan(parseChatResponse(response.content));
-      return (
-        parsed.find((entry) => entry.item === scopedContext.descriptor.item) ?? {
-          item: scopedContext.descriptor.item,
-          supported: false,
-          answer: "Not supported by the retrieved evidence.",
-          support_text: "",
-          reasoning: "",
-        }
-      );
-    }),
-  );
-};
-
 const verifyRequestedItemsWithModel = async (
   question: string,
   requestedItems: RequestedItemDescriptor[],
@@ -1170,51 +1095,6 @@ For that kind of item, populate primary_controls with explicit governing-source 
       raw_response: rawResponse,
     }
   );
-};
-
-const resolveCrossSourceItemWithModel = async (
-  question: string,
-  descriptor: RequestedItemDescriptor,
-  bundle: ItemContextBundle,
-  current: ItemAnswerPlan | null,
-): Promise<ItemAnswerPlan | null> => {
-  if (descriptor.supporting_source_ids.length === 0) {
-    return null;
-  }
-
-  const chat = getChatModel();
-  const scopedContext = formatItemScopedContexts([
-    {
-      descriptor,
-      primaryChunks: bundle.primary_chunks,
-      supportingChunks: bundle.supporting_chunks,
-    },
-  ]);
-
-  const response = await chat.invoke([
-    new SystemMessage(`
-Return JSON only:
-{"items":[{"item":"...","supported":true|false,"answer":"...","support_text":"...","reasoning":"...","primary_controls":["..."],"supporting_safeguards":["..."],"matched_pairs":["..."]}]}
-
-Resolve one cross-source item from a primary governing source and a supporting source.
-
-Rules:
-- Extract explicit control or requirement phrases from the primary context into primary_controls.
-- Extract explicit safeguard, record-handling, compliance-category, or operational-boundary phrases from the supporting context into supporting_safeguards.
-- Populate matched_pairs only when a primary control phrase and a supporting safeguard phrase share the same control category.
-- Match by control category, not by domain. Examples of valid category matches when they are explicitly present: authority or access checks, audit trails, independent/addressable records, record integrity, validation, confidentiality, record linking, or attribution.
-- If matched_pairs is non-empty, set supported=true and answer by summarizing the matching primary controls in plain language.
-- If matched_pairs is empty, set supported=false and answer with the unsupported template.
-- Do not invent clause ids, subsection letters, or controls not visible in the primary context.
-- Do not use law names by themselves as supporting safeguards.
-`),
-    new HumanMessage(
-      `Question:\n${question}\n\nRequested item:\n${descriptor.item}\n\nCurrent resolution:\n${JSON.stringify(current ?? { item: descriptor.item, supported: false, answer: "" })}\n\nItem-scoped context:\n${scopedContext}`,
-    ),
-  ]);
-
-  const parsed = parseItemAnswerPlan(parseChatResponse(response.content));
-  return parsed.find((entry) => entry.item === descriptor.item) ?? null;
 };
 
 export const retrieveNode = async (state: GraphState): Promise<GraphState> => {
@@ -1364,12 +1244,37 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
     chunks,
     itemContexts,
   );
+  const itemVerdict = await verifyRequestedItemsWithModel(
+    state.question,
+    requestedItems,
+    itemResponses,
+    itemResponses.length > 0 ? formatRequestedItemResponses(itemResponses, requestedItems) : "",
+    chunks,
+    itemContexts,
+  );
+  const finalItemResponses =
+    itemVerdict?.items && itemVerdict.items.length > 0
+      ? requestedItems.map((descriptor) => {
+          const corrected = itemVerdict.items?.find((entry) => entry.item === descriptor.item);
+          const existing = itemResponses.find((entry) => entry.item === descriptor.item);
+          return (
+            corrected ??
+            existing ?? {
+              item: descriptor.item,
+              supported: false,
+              answer: `The requested information about ${descriptor.item} is not supported by the retrieved evidence.`,
+              support_text: "",
+              reasoning: "",
+            }
+          );
+        })
+      : itemResponses;
   const finalChunks = chunks;
   const analysis = analyseCrossDocEvidence(finalChunks);
-  const supportedCount = itemResponses.filter((item) => item.supported).length;
+  const supportedCount = finalItemResponses.filter((item) => item.supported).length;
   const answer =
-    itemResponses.length > 0
-      ? formatRequestedItemResponses(itemResponses, requestedItems)
+    finalItemResponses.length > 0
+      ? formatRequestedItemResponses(finalItemResponses, requestedItems)
       : EVIDENCE_WARNING;
 
   return {
@@ -1382,7 +1287,7 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
       : state.retrieval,
     requested_items: requestedItems,
     item_contexts: itemContexts,
-    item_responses: itemResponses,
+    item_responses: finalItemResponses,
     answer,
     citations: [],
     trace: appendTrace(
@@ -1404,7 +1309,8 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
           supportingTopPages: context.supporting_chunks.slice(0, 6).map((chunk) => chunk.chunk.metadata.page),
         })),
         supportedItemCount: supportedCount,
-        itemResponses,
+        itemResponses: finalItemResponses,
+        resolutionReason: itemVerdict?.reason ?? "",
         draftAnswer: answer,
         sourceCount: finalChunks.length,
         isMultiDocument: analysis.isMultiDocument,
@@ -1419,20 +1325,10 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
 export const verifyNode = async (state: GraphState): Promise<GraphState> => {
   const answer = (state.answer ?? "").trim();
   const hasEvidence = (state.retrieval?.chunks.length ?? 0) > 0;
-  const itemResponses = state.item_responses ?? [];
-  const requestedItems =
-    state.requested_items && state.requested_items.length > 0
-      ? state.requested_items
-      : (await planRequestedItems(state.question)).requestedItems;
-  const itemContexts =
-    state.item_contexts && state.item_contexts.length > 0
-      ? state.item_contexts
-      : await hydrateItemContextBundles(state.question, requestedItems, state.retrieval?.chunks ?? []);
 
   if (!hasEvidence) {
     return {
       ...state,
-      requested_items: requestedItems,
       answer: EVIDENCE_WARNING,
       citations: [],
       trace: appendTrace(state.trace, "verify", "failed", "No evidence retrieved for verification.", 0, {
@@ -1444,7 +1340,6 @@ export const verifyNode = async (state: GraphState): Promise<GraphState> => {
   if (!answer || answer.includes(EVIDENCE_WARNING)) {
     return {
       ...state,
-      requested_items: requestedItems,
       answer: EVIDENCE_WARNING,
       citations: [],
       trace: appendTrace(
@@ -1458,90 +1353,15 @@ export const verifyNode = async (state: GraphState): Promise<GraphState> => {
     };
   }
 
-  const itemVerdict = await verifyRequestedItemsWithModel(
-    state.question,
-    requestedItems,
-    itemResponses,
-    answer,
-    state.retrieval?.chunks ?? [],
-    itemContexts,
-  );
-
-  const correctedItemResponses =
-    itemVerdict?.items && itemVerdict.items.length > 0
-      ? requestedItems.map((descriptor) => {
-          const corrected = itemVerdict.items?.find((entry) => entry.item === descriptor.item);
-          const existing = itemResponses.find((entry) => entry.item === descriptor.item);
-          return (
-            corrected ??
-            existing ?? {
-              item: descriptor.item,
-              supported: false,
-              answer: `The requested information about ${descriptor.item} is not supported by the retrieved evidence.`,
-              support_text: "",
-              reasoning: "",
-            }
-          );
-        })
-      : itemResponses;
-  const finalItemResponses = correctedItemResponses;
-  const hasGroundedItemResolution =
-    finalItemResponses.length === requestedItems.length &&
-    finalItemResponses.every(
-      (entry) => entry.item.trim().length > 0 && entry.answer.trim().length > 0,
-    );
-  const correctedAnswer =
-    finalItemResponses.length > 0
-      ? formatRequestedItemResponses(finalItemResponses, requestedItems)
-      : answer;
-
-  if (itemVerdict && !itemVerdict.supported && !hasGroundedItemResolution) {
-    return {
-      ...state,
-      requested_items: requestedItems,
-      item_contexts: itemContexts,
-      item_responses: finalItemResponses,
-      answer: EVIDENCE_WARNING,
-      citations: [],
-      trace: appendTrace(
-        state.trace,
-        "verify",
-        "failed",
-        "Requested-item grounding verifier rejected the generated answer.",
-        0.2,
-        {
-          verifierReason: itemVerdict.reason,
-          correctedItemResponses: finalItemResponses,
-          verifierRawResponse: itemVerdict.raw_response ?? "",
-        },
-      ),
-    };
-  }
-
   return {
     ...state,
-    requested_items: requestedItems,
-    item_contexts: itemContexts,
-    item_responses: finalItemResponses,
-    answer: correctedAnswer,
+    answer,
     citations: [],
     trace: appendTrace(
       state.trace,
       "verify",
-      itemVerdict && !itemVerdict.supported ? "passed" : "passed",
-      itemVerdict && !itemVerdict.supported
-        ? "Verifier returned a grounded corrected item resolution."
-        : "Verified generated answer against retrieved evidence.",
-      undefined,
-      itemVerdict
-        ? {
-            verifierReason: itemVerdict.reason,
-            correctedItemResponses: finalItemResponses,
-            correctedAnswer,
-            verifierRawResponse: itemVerdict.raw_response ?? "",
-            hasGroundedItemResolution,
-          }
-        : {},
+      "passed",
+      "Generation output carried forward without additional verifier correction.",
     ),
   };
 };
