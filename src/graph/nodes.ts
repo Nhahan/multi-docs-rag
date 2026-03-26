@@ -758,16 +758,11 @@ Rules:
 - Do not create a separate item that only restates what to say when evidence is insufficient. Keep unsupported handling inside the same factual item.
 - retrieval_query must be a short evidence-seeking query for the primary source of that item.
 - supporting_retrieval_query must be a short evidence-seeking query for the supporting source context of that same item.
-- retrieval_query should preserve the governing or reporting source and the concrete topic terms needed for the primary source, but remove answer instructions and extra wording.
-- supporting_retrieval_query should preserve the supporting source and the concrete target-system behavior, capability, safeguard, or topic needed from that supporting source.
-- For governing-source support items, supporting_retrieval_query should prefer explicit safeguard or compliance phrases from the supporting source over low-level implementation nouns when those phrases are present in the supporting source.
-- supporting_retrieval_query must stay grounded in explicit supporting-source behaviors or safeguard phrases. Do not use generic verdict phrases such as "evidence for compliance controls", "matching controls", or "compliance support" unless those phrases are themselves visible in the supporting source.
-- If the supporting source describes concrete behaviors, records, safeguards, audit features, access boundaries, integrity properties, confidentiality properties, or deletion/retention behavior, use those concrete phrases in supporting_retrieval_query instead of generic compliance language.
-- retrieval_query should name or anchor only the primary source, not the supporting source.
-- supporting_retrieval_query should name or anchor only the supporting source, not the primary source.
+- retrieval_query should preserve the governing or reporting source and the concrete topic terms needed for the primary source, but remove answer instructions and extra wording. It should anchor only the primary source, not the supporting source.
+- supporting_retrieval_query should preserve the supporting source and the concrete target-system behavior, capability, safeguard, or topic needed from that supporting source. It should anchor only the supporting source, not the primary source.
+- For governing-source support items, make retrieval_query center the governing-source control or safeguard categories that could match, not a broad verdict about whole-system compliance.
+- supporting_retrieval_query must stay grounded in explicit supporting-source behaviors or safeguard phrases. Prefer visible safeguard, record, audit, access, integrity, confidentiality, or deletion phrases over low-level implementation nouns and over generic verdict phrases such as "evidence for compliance controls", "matching controls", or "compliance support".
 - If an item has no supporting source, supporting_source_ids must be [] and supporting_retrieval_query must be an empty string.
-- When an item asks whether a named governing source supports controls, requirements, or sections for a target system or method, make retrieval_query center the governing source and the concrete governed behavior or topic. Make supporting_retrieval_query center the supporting source and the target-system behaviors or safeguards that must be matched.
-- For that kind of item, make retrieval_query center the governing-source control categories or safeguard categories that could match, not a broad compliance verdict for the whole target system.
 - Do not let a reporting source or target system name dominate retrieval_query when the requested governing source is different.
 - primary_source_ids must list the exact corpus document ids that are the main evidence source for the item.
 - supporting_source_ids may list exact corpus document ids that provide target-system or comparison context for the item, but are not the main governing or reporting source.
@@ -775,7 +770,6 @@ Rules:
 - For an item asking whether a governing source supports matching controls or requirements for another named system or method, the governing source belongs in primary_source_ids and the target system source belongs in supporting_source_ids.
 - For any cross-source item, primary_source_ids must contain exactly one governing or reporting source id and must never be empty. supporting_source_ids must not repeat the primary source id.
 - Do not invent extra items.
-- When supporting-source evidence is available, prefer explicit supporting-source safeguard, record, audit, access, integrity, confidentiality, or deletion phrases that are visible in the evidence.
 `),
       new HumanMessage(`Question:\n${question}`),
     ]);
@@ -1128,7 +1122,6 @@ const verifyRequestedItemsWithModel = async (
   question: string,
   requestedItems: RequestedItemDescriptor[],
   itemResponses: ItemAnswerPlan[],
-  answer: string,
   chunks: ScoredChunk[],
   itemContextBundles?: ItemContextBundle[],
 ): Promise<ItemGroundingVerdict | null> => {
@@ -1140,17 +1133,15 @@ const verifyRequestedItemsWithModel = async (
   const context = formatItemScopedContexts(scopedContexts);
 
   const chat = getChatModel();
-  const itemResponseSummary = itemResponses
-    .map((entry) =>
-      JSON.stringify({
-        item: entry.item,
-        supported: entry.supported,
-        answer: entry.answer,
-        support_text: entry.support_text ?? "",
-        reasoning: entry.reasoning ?? "",
-      }),
-    )
-    .join("\n");
+  const itemResponseSummary = JSON.stringify(
+    itemResponses.map((entry) => ({
+      item: entry.item,
+      supported: entry.supported,
+      answer: entry.answer,
+      support_text: entry.support_text ?? "",
+      reasoning: entry.reasoning ?? "",
+    })),
+  );
   const response = await chat.invoke([
     new SystemMessage(`
 Verify whether the answer handles each requested item correctly, and correct it when the retrieved evidence supports a better grounded resolution.
@@ -1180,7 +1171,7 @@ For that kind of supported item, the answer must summarize the matching control 
 For that kind of item, populate primary_controls with explicit governing-source control phrases, supporting_safeguards with explicit target-system safeguard or compliance phrases, and matched_pairs with the actual category-level matches between them. If matched_pairs is non-empty, treat the item as supported. If matched_pairs is empty, treat the item as unsupported.
 `),
     new HumanMessage(
-      `Question:\n${question}\n\nRequested items:\n- ${getRequestedItemLabels(requestedItems).join("\n- ")}\n\nResolved items:\n${itemResponseSummary}\n\nAnswer:\n${answer}\n\nItem-scoped retrieved context:\n${context}`,
+      `Question:\n${question}\n\nRequested items:\n- ${getRequestedItemLabels(requestedItems).join("\n- ")}\n\nResolved items JSON:\n${itemResponseSummary}\n\nItem-scoped retrieved context:\n${context}`,
     ),
   ]);
 
@@ -1369,7 +1360,6 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
     state.question,
     requestedItems,
     itemResponses,
-    itemResponses.length > 0 ? formatRequestedItemResponses(itemResponses, requestedItems) : "",
     chunks,
     itemContexts,
   );
