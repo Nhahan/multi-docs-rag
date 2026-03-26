@@ -19,6 +19,34 @@ const appendTrace = (
   details?: Record<string, unknown>,
 ) => [...traces, { stage, status, message, score, details }];
 
+const nowMs = (): number => performance.now();
+
+const durationMs = (startedAt: number): number =>
+  Number((performance.now() - startedAt).toFixed(2));
+
+const cosineSimilarity = (left: number[], right: number[]): number => {
+  if (left.length !== right.length) return 0;
+  let dot = 0;
+  let leftNorm = 0;
+  let rightNorm = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    dot += left[index] * right[index];
+    leftNorm += left[index] * left[index];
+    rightNorm += right[index] * right[index];
+  }
+  if (leftNorm === 0 || rightNorm === 0) return 0;
+  return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
+};
+
+const sortByRerankThenScore = (left: ScoredChunk, right: ScoredChunk): number => {
+  const leftRerank = typeof left.rerankScore === "number" ? left.rerankScore : Number.NEGATIVE_INFINITY;
+  const rightRerank = typeof right.rerankScore === "number" ? right.rerankScore : Number.NEGATIVE_INFINITY;
+  if (rightRerank !== leftRerank) {
+    return rightRerank - leftRerank;
+  }
+  return right.score - left.score;
+};
+
 const dedupeNormalizedStrings = (values: string[]): string[] => {
   const seen = new Set<string>();
   const deduped: string[] = [];
@@ -543,14 +571,12 @@ const hydrateItemContextBundles = async (
               ).slice(0, ITEM_CONTEXT_PRIMARY_LIMIT);
             })
           : scopedContext.primaryChunks.slice(0, ITEM_CONTEXT_PRIMARY_LIMIT);
+      const primaryProjection = buildPrimaryProjection(primaryChunks);
 
       const supportingChunks =
         descriptor.supporting_source_ids.length > 0
           ? await Promise.all(
               descriptor.supporting_source_ids.map(async (documentId) => {
-                const primaryProjection = buildEvidenceContext(
-                  primaryChunks.slice(0, Math.min(3, primaryChunks.length)),
-                );
                 const retrieval = await retrieveCrossDocument(lexical, vector, {
                   query: buildSourceScopedQuery(
                     [documentId],
@@ -571,9 +597,6 @@ const hydrateItemContextBundles = async (
                   descriptor.supporting_source_ids.includes(chunk.chunk.metadata.document_id),
                 ),
               ]);
-              const primaryProjection = buildEvidenceContext(
-                primaryChunks.slice(0, Math.min(3, primaryChunks.length)),
-              );
               const reranked = await rerankItemContextChunks(
                 merged,
                 [descriptor.supporting_retrieval_query || descriptor.item, primaryProjection],
@@ -795,6 +818,9 @@ const mergeBundleChunks = (bundles: ScoredChunk[][]): ScoredChunk[] => {
   return [...merged.values()];
 };
 
+const buildPrimaryProjection = (chunks: ScoredChunk[]): string =>
+  buildEvidenceContext(chunks.slice(0, Math.min(3, chunks.length)));
+
 const rerankItemContextChunks = async (
   candidates: ScoredChunk[],
   queries: string[],
@@ -832,14 +858,7 @@ const rerankItemContextChunks = async (
           rerankScore: Number.isFinite(sim) ? sim : 0,
         };
       })
-      .sort((a, b) => {
-        const left = typeof a.rerankScore === "number" ? a.rerankScore : Number.NEGATIVE_INFINITY;
-        const right = typeof b.rerankScore === "number" ? b.rerankScore : Number.NEGATIVE_INFINITY;
-        if (right !== left) {
-          return right - left;
-        }
-        return b.score - a.score;
-      });
+      .sort(sortByRerankThenScore);
   } catch {
     return candidates;
   }
@@ -861,20 +880,6 @@ const rerankByAnchorChunks = (
     return candidates;
   }
 
-  const cosineSimilarity = (left: number[], right: number[]): number => {
-    if (left.length !== right.length) return 0;
-    let dot = 0;
-    let leftNorm = 0;
-    let rightNorm = 0;
-    for (let index = 0; index < left.length; index += 1) {
-      dot += left[index] * right[index];
-      leftNorm += left[index] * left[index];
-      rightNorm += right[index] * right[index];
-    }
-    if (leftNorm === 0 || rightNorm === 0) return 0;
-    return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
-  };
-
   return [...candidates]
     .map((entry) => {
       const vector = vectorStore.getVectorForChunk(entry.chunk.id);
@@ -893,14 +898,7 @@ const rerankByAnchorChunks = (
         rerankScore: Number.isFinite(anchorScore) ? anchorScore : 0,
       };
     })
-    .sort((a, b) => {
-      const left = typeof a.rerankScore === "number" ? a.rerankScore : Number.NEGATIVE_INFINITY;
-      const right = typeof b.rerankScore === "number" ? b.rerankScore : Number.NEGATIVE_INFINITY;
-      if (right !== left) {
-        return right - left;
-      }
-      return b.score - a.score;
-    });
+    .sort(sortByRerankThenScore);
 };
 
 const formatFinalItemAnswer = (
@@ -1199,7 +1197,10 @@ For that kind of item, populate primary_controls with explicit governing-source 
 };
 
 export const retrieveNode = async (state: GraphState): Promise<GraphState> => {
+  const stageStartedAt = nowMs();
+  const indexLoadStartedAt = nowMs();
   const { lexical, vector } = await getIndexStore({ allowDenseMissing: true });
+  const indexLoadMs = durationMs(indexLoadStartedAt);
   const explicitSourceIds = extractReferencedDocumentIds(state.question);
   const retrievalQueries =
     explicitSourceIds.length > 0
@@ -1212,6 +1213,7 @@ export const retrieveNode = async (state: GraphState): Promise<GraphState> => {
           ),
         )
       : [state.question];
+  const retrievalStartedAt = nowMs();
   const retrieval =
     explicitSourceIds.length > 0
       ? await Promise.all(
@@ -1238,6 +1240,7 @@ export const retrieveNode = async (state: GraphState): Promise<GraphState> => {
           additionalQueries: [],
           topK: appConfig.retrieval.topK,
         });
+  const retrievalMs = durationMs(retrievalStartedAt);
 
   const chunks = retrieval.chunks;
   const summary = summarizeCitations(chunks);
@@ -1269,12 +1272,18 @@ export const retrieveNode = async (state: GraphState): Promise<GraphState> => {
         lexicalEnabled: retrieval.lexical_enabled,
         retrievalQueries,
         explicitSourceIds,
+        timingsMs: {
+          indexLoad: indexLoadMs,
+          retrieval: retrievalMs,
+          total: durationMs(stageStartedAt),
+        },
       },
     ),
   };
 };
 
 export const evidenceGateNode = async (state: GraphState): Promise<GraphState> => {
+  const stageStartedAt = nowMs();
   const primaryRetrieval = state.retrieval;
   if (!primaryRetrieval) {
     const evidence: EvidenceAvailability = {
@@ -1311,23 +1320,31 @@ export const evidenceGateNode = async (state: GraphState): Promise<GraphState> =
         evidenceAvailability: evidence,
         coverageSummary,
         retrieverReranked: primaryRetrieval.reranked,
+        timingsMs: {
+          total: durationMs(stageStartedAt),
+        },
       },
     ),
   };
 };
 
 export const generateNode = async (state: GraphState): Promise<GraphState> => {
+  const stageStartedAt = nowMs();
   const chunks = state.retrieval?.chunks ?? [];
   const hasCrossCoverage = hasMultiDocumentCoverage(chunks);
   const evidencePassed = state.evidence?.passed ?? false;
+  const planStartedAt = nowMs();
   const requestedItems =
     state.requested_items && state.requested_items.length > 0
       ? state.requested_items
       : (await planRequestedItems(state.question)).requestedItems;
+  const planRequestedItemsMs = durationMs(planStartedAt);
+  const hydrateStartedAt = nowMs();
   const itemContexts =
     state.item_contexts && state.item_contexts.length > 0
       ? state.item_contexts
       : await hydrateItemContextBundles(state.question, requestedItems, chunks);
+  const hydrateItemContextBundlesMs = durationMs(hydrateStartedAt);
 
   if (chunks.length === 0) {
     return {
@@ -1339,12 +1356,15 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
     };
   }
 
+  const draftGenerationStartedAt = nowMs();
   const itemResponses = await generateItemResponsesWithModel(
     state.question,
     requestedItems,
     chunks,
     itemContexts,
   );
+  const generateItemResponsesMs = durationMs(draftGenerationStartedAt);
+  const groundedResolutionStartedAt = nowMs();
   const itemVerdict = await verifyRequestedItemsWithModel(
     state.question,
     requestedItems,
@@ -1353,6 +1373,7 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
     chunks,
     itemContexts,
   );
+  const verifyRequestedItemsMs = durationMs(groundedResolutionStartedAt);
   const finalItemResponses =
     itemVerdict?.items && itemVerdict.items.length > 0
       ? requestedItems.map((descriptor) => {
@@ -1378,6 +1399,7 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
     finalItemResponses.length > 0
       ? formatRequestedItemResponses(finalItemResponses, requestedItems)
       : EVIDENCE_WARNING;
+  const requestedItemByLabel = new Map(requestedItems.map((entry) => [entry.item, entry]));
 
   return {
     ...state,
@@ -1405,8 +1427,8 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
         requestedItems: getRequestedItemLabels(requestedItems),
         itemContextCoverage: itemContexts.map((context) => ({
           item: context.item,
-          primaryQuery: requestedItems.find((entry) => entry.item === context.item)?.retrieval_query ?? "",
-          supportingQuery: requestedItems.find((entry) => entry.item === context.item)?.supporting_retrieval_query ?? "",
+          primaryQuery: requestedItemByLabel.get(context.item)?.retrieval_query ?? "",
+          supportingQuery: requestedItemByLabel.get(context.item)?.supporting_retrieval_query ?? "",
           primaryDocuments: Array.from(new Set(context.primary_chunks.map((chunk) => chunk.chunk.metadata.document_id))),
           supportingDocuments: Array.from(new Set(context.supporting_chunks.map((chunk) => chunk.chunk.metadata.document_id))),
           primaryTopPages: context.primary_chunks.slice(0, 6).map((chunk) => chunk.chunk.metadata.page),
@@ -1423,12 +1445,20 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
         documentCount: analysis.documentCount,
         crossDocCoverage: crossDocCoverageSummary(analysis),
         chunkSample: analysis.structuredContext.slice(0, 300),
+        timingsMs: {
+          planRequestedItems: planRequestedItemsMs,
+          hydrateItemContextBundles: hydrateItemContextBundlesMs,
+          generateItemResponses: generateItemResponsesMs,
+          verifyRequestedItems: verifyRequestedItemsMs,
+          total: durationMs(stageStartedAt),
+        },
       },
     ),
   };
 };
 
 export const verifyNode = async (state: GraphState): Promise<GraphState> => {
+  const stageStartedAt = nowMs();
   const answer = (state.answer ?? "").trim();
   const hasEvidence = (state.retrieval?.chunks.length ?? 0) > 0;
 
@@ -1454,7 +1484,11 @@ export const verifyNode = async (state: GraphState): Promise<GraphState> => {
         "passed",
         "Model reported insufficient evidence and returned the standard insufficiency message.",
         0.95,
-        {},
+        {
+          timingsMs: {
+            total: durationMs(stageStartedAt),
+          },
+        },
       ),
     };
   }
@@ -1468,6 +1502,12 @@ export const verifyNode = async (state: GraphState): Promise<GraphState> => {
       "verify",
       "passed",
       "Generation output carried forward without additional verifier correction.",
+      undefined,
+      {
+        timingsMs: {
+          total: durationMs(stageStartedAt),
+        },
+      },
     ),
   };
 };
