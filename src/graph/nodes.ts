@@ -540,11 +540,6 @@ const hydrateItemContextBundles = async (
 ): Promise<ItemContextBundle[]> => {
   const globalContexts = buildItemScopedContexts(requestedItems, chunks);
   const { lexical, vector } = await getIndexStore({ allowDenseMissing: true });
-  const questionScopedChunks = await retrieveCrossDocument(lexical, vector, {
-    query: question,
-    additionalQueries: [],
-    topK: appConfig.retrieval.topK,
-  }).then((retrieval) => retrieval.chunks);
 
   return Promise.all(
     globalContexts.map(async (scopedContext) => {
@@ -591,12 +586,7 @@ const hydrateItemContextBundles = async (
                 return retrieval.chunks;
               }),
             ).then(async (bundles) => {
-              const merged = mergeBundleChunks([
-                ...bundles,
-                questionScopedChunks.filter((chunk) =>
-                  descriptor.supporting_source_ids.includes(chunk.chunk.metadata.document_id),
-                ),
-              ]);
+              const merged = mergeBundleChunks(bundles);
               const reranked = await rerankItemContextChunks(
                 merged,
                 [descriptor.supporting_retrieval_query || descriptor.item, primaryProjection],
@@ -979,13 +969,13 @@ const formatItemScopedContexts = (scopedContexts: ItemScopedContext[]): string =
 
       return [
         `Item: ${descriptor.item}`,
-        `Primary source ids: ${descriptor.primary_source_ids.join(", ") || "(none)"}`,
-        `Supporting source ids: ${descriptor.supporting_source_ids.join(", ") || "(none)"}`,
-        `Primary context:\n${primaryContext}`,
-        `Supporting context:\n${supportingContext}`,
-      ].join("\n\n");
+        `Primary: ${descriptor.primary_source_ids.join(", ") || "(none)"}`,
+        primaryContext,
+        `Supporting: ${descriptor.supporting_source_ids.join(", ") || "(none)"}`,
+        supportingContext,
+      ].join("\n");
     })
-    .join("\n\n---\n\n");
+    .join("\n---\n");
 
 const itemContextsFromBundles = (
   requestedItems: RequestedItemDescriptor[],
@@ -1031,7 +1021,9 @@ const generateItemResponsesWithModel = async (
     return [];
   }
 
-  const chat = getChatModel();
+  const chat = getChatModel(undefined, {
+    numPredict: Math.max(256, Math.ceil(appConfig.runtime.ollamaChatNumPredict * 0.9)),
+  });
   const itemLabels = getRequestedItemLabels(requestedItems);
   const context = formatItemScopedContexts(itemContextsFromBundles(requestedItems, itemContextBundles, chunks));
   const response = await chat.invoke([
@@ -1121,7 +1113,7 @@ Rules:
 const verifyRequestedItemsWithModel = async (
   question: string,
   requestedItems: RequestedItemDescriptor[],
-  itemResponses: ItemAnswerPlan[],
+  itemResponses: ItemAnswerPlan[] | null,
   chunks: ScoredChunk[],
   itemContextBundles?: ItemContextBundle[],
 ): Promise<ItemGroundingVerdict | null> => {
@@ -1133,30 +1125,46 @@ const verifyRequestedItemsWithModel = async (
   const context = formatItemScopedContexts(scopedContexts);
 
   const chat = getChatModel();
-  const itemResponseSummary = JSON.stringify(
-    itemResponses.map((entry) => ({
-      item: entry.item,
-      supported: entry.supported,
-      answer: entry.answer,
-      support_text: entry.support_text ?? "",
-      reasoning: entry.reasoning ?? "",
-    })),
-  );
+  const itemResponseSummary =
+    itemResponses && itemResponses.length > 0
+      ? JSON.stringify(
+          itemResponses.map((entry) => ({
+            item: entry.item,
+            supported: entry.supported,
+            answer: entry.answer,
+            support_text: entry.support_text ?? "",
+            reasoning: entry.reasoning ?? "",
+          })),
+        )
+      : "";
   const response = await chat.invoke([
     new SystemMessage(`
-Verify whether the answer handles each requested item correctly, and correct it when the retrieved evidence supports a better grounded resolution.
+Resolve every requested item directly from the retrieved evidence and return the grounded final resolution.
 
 Return JSON only:
 {"supported":true|false,"reason":"...","items":[{"item":"...","supported":true|false,"answer":"...","support_text":"...","reasoning":"...","primary_controls":["..."],"supporting_safeguards":["..."],"matched_pairs":["..."]}]}.
 
 Use the items array to provide the grounded final resolution for every requested item.
-If the current answer or resolved items are wrong but the retrieved evidence supports a corrected answer, correct them in the items array.
+If a draft resolution is provided and it is wrong, correct it in the items array.
 Set supported=true when the items array provides a fully grounded final resolution for all requested items.
 Set supported=false only when the retrieved evidence is insufficient to produce a grounded final resolution for one or more requested items.
 - Keep every field brief. Prefer short phrases over full quotations.
 - support_text must be a single short phrase or sentence fragment of at most 25 words.
 - reasoning must be a single short sentence of at most 20 words.
 - primary_controls, supporting_safeguards, and matched_pairs must contain at most 4 entries each, and each entry must stay under 12 words.
+- Preserve each requested item exactly.
+- For every item, decide whether the retrieved evidence directly supports it and return a concise self-contained user-facing answer.
+- Supported answers must be complete sentences, not bare values, fragments, labels, or isolated numbers.
+- If a supported value is stated only under an explicit condition, environment, hardware profile, memory budget, context length, or other qualifier, include that qualifier in the answer instead of presenting the value as unconditional.
+- Preserve the requested qualifier exactly when it matters semantically. Cold, warm, and hot are distinct requested conditions and must not be substituted for one another.
+- Each item has a primary context and an optional supporting context.
+- Answer an item from its primary context. Use supporting context only to interpret the target system, target behavior, or comparison target named in the item.
+- Do not use supporting context as the governing or reporting source for the item.
+- If a requested item is answered by an explicit table cell, comparison row, metric row, caption, or short factual sentence in the retrieved evidence, treat it as supported even if the evidence is concise or tabular.
+- If the question asks for a single value or metric, answer with the value for the requested subject only. Do not add baseline, comparison, or alternative-system values unless the requested item explicitly asks for comparison.
+- If unsupported, set supported=false and answer with a concise self-contained statement that names the requested subject and includes the phrase "not supported by the retrieved evidence".
+- If unsupported, support_text must name what the retrieved evidence actually contains and what is still missing.
+- If the retrieved evidence explicitly states that a configuration fits, supports, allows, or reaches a quantity under the same requested condition, treat that quantity as the supported answer.
 
 For supported items, require that the item's answer matches its support_text and that the support_text directly supports the exact requested item rather than a nearby metric, qualifier, row, or condition.
 If a value is explicitly present in the retrieved context, treat it as supported only when it matches the requested subject and qualifier. Preserve stated qualifiers and conditions.
@@ -1171,7 +1179,9 @@ For that kind of supported item, the answer must summarize the matching control 
 For that kind of item, populate primary_controls with explicit governing-source control phrases, supporting_safeguards with explicit target-system safeguard or compliance phrases, and matched_pairs with the actual category-level matches between them. If matched_pairs is non-empty, treat the item as supported. If matched_pairs is empty, treat the item as unsupported.
 `),
     new HumanMessage(
-      `Question:\n${question}\n\nRequested items:\n- ${getRequestedItemLabels(requestedItems).join("\n- ")}\n\nResolved items JSON:\n${itemResponseSummary}\n\nItem-scoped retrieved context:\n${context}`,
+      `Question:\n${question}\n\nRequested items:\n- ${getRequestedItemLabels(requestedItems).join("\n- ")}${
+        itemResponseSummary ? `\n\nResolved items JSON:\n${itemResponseSummary}` : ""
+      }\n\nItem-scoped retrieved context:\n${context}`,
     ),
   ]);
 
@@ -1347,31 +1357,22 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
     };
   }
 
-  const draftGenerationStartedAt = nowMs();
-  const itemResponses = await generateItemResponsesWithModel(
-    state.question,
-    requestedItems,
-    chunks,
-    itemContexts,
-  );
-  const generateItemResponsesMs = durationMs(draftGenerationStartedAt);
   const groundedResolutionStartedAt = nowMs();
   const itemVerdict = await verifyRequestedItemsWithModel(
     state.question,
     requestedItems,
-    itemResponses,
+    null,
     chunks,
     itemContexts,
   );
-  const verifyRequestedItemsMs = durationMs(groundedResolutionStartedAt);
+  const resolveRequestedItemsMs = durationMs(groundedResolutionStartedAt);
   const finalItemResponses =
     itemVerdict?.items && itemVerdict.items.length > 0
       ? requestedItems.map((descriptor) => {
           const corrected = itemVerdict.items?.find((entry) => entry.item === descriptor.item);
-          const existing = itemResponses.find((entry) => entry.item === descriptor.item);
           return (
             corrected ??
-            existing ?? {
+            {
               item: descriptor.item,
               supported: false,
               answer: `The requested information about ${descriptor.item} is not supported by the retrieved evidence.`,
@@ -1380,10 +1381,15 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
             }
           );
         })
-      : itemResponses;
+      : requestedItems.map((descriptor) => ({
+          item: descriptor.item,
+          supported: false,
+          answer: `The requested information about ${descriptor.item} is not supported by the retrieved evidence.`,
+          support_text: "",
+          reasoning: "",
+        }));
   const finalChunks = chunks;
   const analysis = analyseCrossDocEvidence(finalChunks);
-  const draftSupportedCount = itemResponses.filter((item) => item.supported).length;
   const supportedCount = finalItemResponses.filter((item) => item.supported).length;
   const answer =
     finalItemResponses.length > 0
@@ -1424,12 +1430,9 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
           primaryTopPages: context.primary_chunks.slice(0, 6).map((chunk) => chunk.chunk.metadata.page),
           supportingTopPages: context.supporting_chunks.slice(0, 6).map((chunk) => chunk.chunk.metadata.page),
         })),
-        draftSupportedItemCount: draftSupportedCount,
-        draftItemResponses: itemResponses,
         supportedItemCount: supportedCount,
         itemResponses: finalItemResponses,
         resolutionReason: itemVerdict?.reason ?? "",
-        draftAnswer: answer,
         sourceCount: finalChunks.length,
         isMultiDocument: analysis.isMultiDocument,
         documentCount: analysis.documentCount,
@@ -1438,8 +1441,7 @@ export const generateNode = async (state: GraphState): Promise<GraphState> => {
         timingsMs: {
           planRequestedItems: planRequestedItemsMs,
           hydrateItemContextBundles: hydrateItemContextBundlesMs,
-          generateItemResponses: generateItemResponsesMs,
-          verifyRequestedItems: verifyRequestedItemsMs,
+          resolveRequestedItems: resolveRequestedItemsMs,
           total: durationMs(stageStartedAt),
         },
       },
